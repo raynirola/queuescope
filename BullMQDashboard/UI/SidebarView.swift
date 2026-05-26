@@ -2,47 +2,81 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var queueSearch = ""
+    let showConnectionManager: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             sidebarHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 18)
+                .frame(height: 88)
 
             Divider()
 
-            List(selection: selectedQueueBinding) {
-                Section("Queues") {
-                    ForEach(model.queues) { queue in
-                        QueueSidebarRow(queue: queue)
-                            .tag(queue.name)
-                            .listRowInsets(EdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10))
-                            .onTapGesture {
-                                model.selectQueue(queue)
-                            }
+            queueList
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var queueList: some View {
+        ZStack(alignment: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    SidebarSectionHeader(title: "Queues")
+                        .padding(.horizontal, 18)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+
+                    if filteredQueues.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("No queues found")
+                                .font(.callout.weight(.medium))
+                            Text("Try another queue name.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
+                    } else {
+                        ForEach(filteredQueues) { queue in
+                            QueueSidebarRow(
+                                queue: queue,
+                                isSelected: model.selectedQueue?.name == queue.name
+                            )
+                                .contentShape(RoundedRectangle(cornerRadius: 10))
+                                .onTapGesture {
+                                    model.selectQueue(queue)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 3)
+                        }
                     }
                 }
+                .padding(.bottom, 74)
             }
+            .background(Color(nsColor: .windowBackgroundColor))
 
-            Divider()
-
-            HStack {
-                StatusDot(color: model.isConnected ? .green : .secondary)
-                Text(model.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-            }
-            .padding(12)
+            QueueSearchBar(text: $queueSearch)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
         }
     }
 
     private var sidebarHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Queues", systemImage: "tray.2")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Button(action: showConnectionManager) {
+                    Image(systemName: "externaldrive.connected.to.line.below")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                }
+                .buttonStyle(.plain)
+                .help("Manage Redis connections")
+
+                Text(connectionTitle)
+                    .font(.headline)
+            }
 
             HStack(spacing: 6) {
                 StatusDot(color: model.isConnected ? .green : .secondary)
@@ -59,14 +93,53 @@ struct SidebarView: View {
         model.isConnected ? "\(model.prefix) · \(model.redisURL.redactedRedisDisplay)" : "Open Connections to connect"
     }
 
-    private var selectedQueueBinding: Binding<String?> {
-        Binding(
-            get: { model.selectedQueue?.name },
-            set: { name in
-                guard let name, let queue = model.queues.first(where: { $0.name == name }) else { return }
-                model.selectQueue(queue)
+    private var connectionTitle: String {
+        model.isConnected ? model.connectionProfileName : "No connection"
+    }
+
+    private var filteredQueues: [QueueSummary] {
+        let query = queueSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.queues }
+        return model.queues.filter { queue in
+            queue.name.localizedCaseInsensitiveContains(query) ||
+                queue.name.titleCasedQueueName.localizedCaseInsensitiveContains(query)
+        }
+    }
+}
+
+private struct QueueSearchBar: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            TextField("Search queues", text: $text)
+                .textFieldStyle(.plain)
+                .font(.callout)
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
             }
-        )
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.primary.opacity(0.10))
+        }
+        .shadow(color: .black.opacity(0.10), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -380,8 +453,20 @@ private struct ProfileRow: View {
     }
 }
 
+private struct SidebarSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct QueueSidebarRow: View {
     let queue: QueueSummary
+    let isSelected: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -391,10 +476,11 @@ private struct QueueSidebarRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(queue.name.titleCasedQueueName)
                     .font(.callout.weight(.medium))
+                    .foregroundStyle(isSelected ? .white : .primary)
                     .lineLimit(1)
                 Text(queue.name)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? .white.opacity(0.72) : .secondary)
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
@@ -415,7 +501,14 @@ private struct QueueSidebarRow: View {
 
             Spacer()
         }
-        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.accentColor)
+            }
+        }
     }
 
     private var color: Color {

@@ -1,21 +1,57 @@
 import Charts
 import SwiftUI
 
+enum QueueWorkspaceView: String, CaseIterable, Identifiable {
+    case overview
+    case runs
+    case flowGraph
+    case schedulers
+    case workers
+    case metrics
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview: "Overview"
+        case .runs: "Runs"
+        case .flowGraph: "Flow graph"
+        case .schedulers: "Schedulers"
+        case .workers: "Workers"
+        case .metrics: "Metrics"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .overview: "rectangle.3.group"
+        case .runs: "list.bullet.rectangle"
+        case .flowGraph: "point.3.connected.trianglepath.dotted"
+        case .schedulers: "calendar.badge.clock"
+        case .workers: "person.2.wave.2"
+        case .metrics: "chart.xyaxis.line"
+        }
+    }
+
+    var isComingSoon: Bool {
+        self == .flowGraph
+    }
+}
+
 struct QueueDashboardView: View {
     @EnvironmentObject private var model: AppModel
+    let selectedView: QueueWorkspaceView
 
     var body: some View {
         Group {
             if let queue = model.selectedQueue {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 18) {
                         header(queue)
-                        statusCards(queue)
-                        JobTableView()
-                        observabilityGrid(queue)
+                        content(for: queue)
                     }
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 18)
+                    .padding(.horizontal, 26)
+                    .padding(.vertical, 24)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
             } else {
@@ -28,14 +64,34 @@ struct QueueDashboardView: View {
         }
     }
 
+    @ViewBuilder
+    private func content(for queue: QueueSummary) -> some View {
+        switch selectedView {
+        case .overview:
+            statusCards(queue)
+            observabilityGrid(queue)
+        case .runs:
+            statusCards(queue)
+            JobTableView()
+        case .flowGraph:
+            FlowGraphComingSoonView()
+        case .schedulers:
+            SchedulersPanel()
+        case .workers:
+            WorkersPanel()
+        case .metrics:
+            MetricsPanel(queueName: queue.name)
+        }
+    }
+
     private func header(_ queue: QueueSummary) -> some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(queue.name.titleCasedQueueName)
+                Text(selectedView.title)
                     .font(.system(size: 28, weight: .semibold, design: .default))
                     .tracking(-0.2)
                     .lineLimit(1)
-                Text("\(queue.prefix):\(queue.name) · \(queue.health.label)")
+                Text("\(queue.name.titleCasedQueueName) · \(queue.prefix):\(queue.name) · \(queue.health.label)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -61,31 +117,41 @@ struct QueueDashboardView: View {
         let hasFailures = model.jobs.contains { $0.state == .failed }
         let hasSchedulers = !model.schedulers.isEmpty
 
-        VStack(spacing: 14) {
-            if hasTrendData || hasWorkers {
-                HStack(alignment: .top, spacing: 14) {
-                    if hasTrendData {
-                        MetricsPanel(queueName: queue.name)
-                    }
-                    if hasWorkers {
-                        WorkersPanel()
-                    }
-                }
+        VStack(spacing: 12) {
+            if hasTrendData {
+                MetricsPanel(queueName: queue.name)
             }
 
-            if hasFailures || hasSchedulers {
-                HStack(alignment: .top, spacing: 14) {
-                    if hasFailures {
-                        FailedTriagePanel()
-                    }
-                    if hasSchedulers {
-                        SchedulersPanel()
-                    }
-                }
+            if hasWorkers {
+                WorkersPanel()
+            }
+
+            if hasFailures {
+                FailedTriagePanel()
+            }
+
+            if hasSchedulers {
+                SchedulersPanel()
             }
         }
     }
 
+}
+
+private struct FlowGraphComingSoonView: View {
+    var body: some View {
+        ContentUnavailableView {
+            Label("Flow graph coming soon", systemImage: "point.3.connected.trianglepath.dotted")
+        } description: {
+            Text("Parent and child jobs will be visualized here once FlowProducer support lands.")
+        }
+        .frame(maxWidth: .infinity, minHeight: 340)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.055))
+        }
+    }
 }
 
 private struct MetricsGrid: View {
