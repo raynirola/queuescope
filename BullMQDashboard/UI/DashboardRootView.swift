@@ -4,6 +4,8 @@ struct DashboardRootView: View {
     @EnvironmentObject private var model: AppModel
     @State private var isSidebarVisible = true
     @State private var isInspectorVisible = false
+    @State private var isConnectionManagerVisible = false
+    @State private var didPresentInitialConnectionManager = false
 
     var body: some View {
         rootSplit
@@ -21,6 +23,13 @@ struct DashboardRootView: View {
             }
 
             ToolbarItemGroup {
+                Button {
+                    isConnectionManagerVisible = true
+                } label: {
+                    Label("Connections", systemImage: "server.rack")
+                }
+                .help("Manage Redis connections")
+
                 if model.isLoading {
                     ProgressView()
                         .controlSize(.small)
@@ -49,6 +58,15 @@ struct DashboardRootView: View {
             }
         } message: {
             Text(model.lastError ?? "")
+        }
+        .sheet(isPresented: $isConnectionManagerVisible) {
+            ConnectionManagerView()
+                .environmentObject(model)
+        }
+        .onAppear {
+            guard !didPresentInitialConnectionManager, (!model.isConnected || model.profiles.isEmpty) else { return }
+            didPresentInitialConnectionManager = true
+            isConnectionManagerVisible = true
         }
         .onChange(of: model.selectedJobDetail?.id) { _, id in
             isInspectorVisible = id != nil

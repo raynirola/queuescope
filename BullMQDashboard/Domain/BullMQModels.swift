@@ -29,14 +29,25 @@ enum BullMQState: String, CaseIterable, Identifiable, Sendable {
 struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
     var id: UUID
     var name: String
+    var tag: String
     var urlWithoutSecret: String
     var prefix: String
 
-    init(id: UUID = UUID(), name: String, urlWithoutSecret: String, prefix: String = "bull") {
+    init(id: UUID = UUID(), name: String, tag: String = "local", urlWithoutSecret: String, prefix: String = "bull") {
         self.id = id
         self.name = name
+        self.tag = tag
         self.urlWithoutSecret = urlWithoutSecret
         self.prefix = prefix
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        tag = try container.decodeIfPresent(String.self, forKey: .tag) ?? "local"
+        urlWithoutSecret = try container.decode(String.self, forKey: .urlWithoutSecret)
+        prefix = try container.decode(String.self, forKey: .prefix)
     }
 }
 

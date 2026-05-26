@@ -4,6 +4,8 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published var redisURL = "redis://127.0.0.1:6379"
     @Published var prefix = "bull"
+    @Published var connectionProfileName = "Local Redis"
+    @Published var connectionProfileTag = "local"
     @Published var profiles: [RedisConnectionProfile] = []
     @Published var selectedQueue: QueueSummary?
     @Published var queues: [QueueSummary] = []
@@ -67,7 +69,8 @@ final class AppModel: ObservableObject {
         do {
             let parsed = try RedisURLParser.parse(redisURL, prefix: prefix)
             let profile = RedisConnectionProfile(
-                name: parsed.name,
+                name: connectionProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? parsed.name : connectionProfileName.trimmingCharacters(in: .whitespacesAndNewlines),
+                tag: connectionProfileTag,
                 urlWithoutSecret: RedisURLParser.redacted(redisURL),
                 prefix: parsed.prefix
             )
@@ -88,6 +91,8 @@ final class AppModel: ObservableObject {
             }
             redisURL = secret
             prefix = profile.prefix
+            connectionProfileName = profile.name
+            connectionProfileTag = profile.tag
             await connect()
         } catch {
             lastError = error.localizedDescription
