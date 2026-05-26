@@ -76,7 +76,7 @@ struct QueueDashboardView: View {
         case .flowGraph:
             FlowGraphComingSoonView()
         case .schedulers:
-            SchedulersPanel()
+            SchedulersPanel(style: .detailed)
         case .workers:
             WorkersPanel()
         case .metrics:
@@ -807,10 +807,19 @@ private struct FailureTriageRow: View {
 
 private struct SchedulersPanel: View {
     @EnvironmentObject private var model: AppModel
+    var style: SchedulerPanelStyle = .compact
 
     var body: some View {
         let schedules = scheduleItems
 
+        if style == .detailed {
+            detailedBody(schedules)
+        } else {
+            compactBody(schedules)
+        }
+    }
+
+    private func compactBody(_ schedules: [SchedulerDisplayItem]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             header(count: schedules.count)
             if schedules.isEmpty {
@@ -824,6 +833,30 @@ private struct SchedulersPanel: View {
             }
         }
         .panelStyle(minHeight: 220)
+    }
+
+    @ViewBuilder
+    private func detailedBody(_ schedules: [SchedulerDisplayItem]) -> some View {
+        if schedules.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                header(count: schedules.count)
+                emptyState
+            }
+            .panelStyle(minHeight: 220)
+        } else {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text(schedules.count == 1 ? "1 schedule" : "\(schedules.count.formatted()) schedules")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
+                    SchedulerDetailSection(schedule: schedule, tint: tint(for: index))
+                }
+            }
+        }
     }
 
     private func header(count: Int) -> some View {
@@ -955,6 +988,11 @@ private struct SchedulersPanel: View {
     }
 }
 
+private enum SchedulerPanelStyle {
+    case compact
+    case detailed
+}
+
 private struct SchedulerDisplayItem: Identifiable {
     let id: String
     let title: String
@@ -962,6 +1000,107 @@ private struct SchedulerDisplayItem: Identifiable {
     let cadence: String
     let nextRun: Date?
     let rawKey: String
+}
+
+private struct SchedulerDetailSection: View {
+    let schedule: SchedulerDisplayItem
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(schedule.title)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(schedule.cadence)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(tint.opacity(0.10), in: Capsule())
+            }
+
+            VStack(spacing: 0) {
+                SchedulerDetailRow(icon: icon, tint: tint, label: "Next run", value: nextRunText)
+                Divider().padding(.leading, 56)
+                SchedulerDetailRow(icon: "number", tint: .gray, label: "Job key", value: schedule.rawTitle, isMonospaced: true)
+                Divider().padding(.leading, 56)
+                SchedulerDetailRow(icon: "clock", tint: .gray, label: "Next timestamp", value: nextTimestampText)
+                Divider().padding(.leading, 56)
+                SchedulerDetailRow(icon: "key.horizontal", tint: .gray, label: "Redis key", value: schedule.rawKey, isMonospaced: true)
+            }
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            }
+        }
+    }
+
+    private var icon: String {
+        schedule.cadence == "Cron" ? "timer" : "repeat"
+    }
+
+    private var nextRunText: String {
+        guard let nextRun = schedule.nextRun else { return "Unknown" }
+        let interval = nextRun.timeIntervalSince(Date())
+        if interval <= 0 {
+            return "Due now"
+        }
+        if interval < 60 {
+            return "in \(Int(interval))s"
+        }
+        if interval < 3_600 {
+            return "in \(Int(interval / 60))m"
+        }
+        if interval < 86_400 {
+            return "in \(Int(interval / 3_600))h"
+        }
+        return nextRun.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var nextTimestampText: String {
+        guard let nextRun = schedule.nextRun else { return "—" }
+        return nextRun.formatted(date: .abbreviated, time: .standard)
+    }
+}
+
+private struct SchedulerDetailRow: View {
+    let icon: String
+    let tint: Color
+    let label: String
+    let value: String
+    var isMonospaced = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(tint.opacity(0.14))
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 32, height: 32)
+
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 118, alignment: .leading)
+
+            Text(value)
+                .font(isMonospaced ? .callout.monospaced() : .callout)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
 }
 
 private struct SchedulerRow: View {
