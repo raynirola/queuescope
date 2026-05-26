@@ -78,7 +78,7 @@ struct QueueDashboardView: View {
         case .schedulers:
             SchedulersPanel(style: .detailed)
         case .workers:
-            WorkersPanel()
+            WorkersPanel(style: .detailed)
         case .metrics:
             MetricsPanel(queueName: queue.name)
         }
@@ -478,8 +478,17 @@ private struct ThroughputLegend: View {
 
 private struct WorkersPanel: View {
     @EnvironmentObject private var model: AppModel
+    var style: WorkerPanelStyle = .compact
 
     var body: some View {
+        if style == .detailed {
+            detailedBody
+        } else {
+            compactBody
+        }
+    }
+
+    private var compactBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if model.workers.isEmpty {
@@ -496,6 +505,33 @@ private struct WorkersPanel: View {
             }
         }
         .panelStyle(minHeight: 220)
+    }
+
+    @ViewBuilder
+    private var detailedBody: some View {
+        if model.workers.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                SectionEmptyState(
+                    icon: "person.2.slash",
+                    message: "Worker metadata keys were not found for this queue."
+                )
+            }
+            .panelStyle(minHeight: 220)
+        } else {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text(model.workers.count == 1 ? "1 worker" : "\(model.workers.count.formatted()) workers")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                ForEach(model.workers) { worker in
+                    WorkerDetailSection(worker: worker)
+                }
+            }
+        }
     }
 
     private var header: some View {
@@ -525,6 +561,11 @@ private struct WorkersPanel: View {
                 .foregroundStyle(.secondary)
         }
     }
+}
+
+private enum WorkerPanelStyle {
+    case compact
+    case detailed
 }
 
 private struct WorkerRow: View {
@@ -646,6 +687,134 @@ private struct WorkerRow: View {
             return "\(seconds / 3_600)h ago"
         }
         return date.formatted(date: .abbreviated, time: .omitted)
+    }
+}
+
+private struct WorkerDetailSection: View {
+    let worker: WorkerSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(worker.name.titleCasedQueueName)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(statusText)
+                    .font(.caption.monospaced().weight(.medium))
+                    .tracking(-0.3)
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.10), in: Capsule())
+            }
+
+            VStack(spacing: 0) {
+                WorkerDetailRow(icon: statusIcon, tint: statusColor, label: "Status", value: statusText)
+                Divider().padding(.leading, 56)
+                WorkerDetailRow(icon: "play.rectangle", tint: .blue, label: "Active job", value: activeJobText)
+                Divider().padding(.leading, 56)
+                WorkerDetailRow(icon: "waveform.path.ecg", tint: .green, label: "Heartbeat", value: heartbeatText)
+                Divider().padding(.leading, 56)
+                WorkerDetailRow(icon: "slider.horizontal.3", tint: .blue, label: "Concurrency", value: worker.raw["concurrency"] ?? "—")
+                Divider().padding(.leading, 56)
+                WorkerDetailRow(icon: "checkmark", tint: .green, label: "Processed", value: worker.raw["processed"] ?? "0")
+                Divider().padding(.leading, 56)
+                WorkerDetailRow(icon: "xmark", tint: .red, label: "Failed", value: worker.raw["failed"] ?? "0")
+                Divider().padding(.leading, 56)
+                WorkerDetailRow(icon: "number", tint: .gray, label: "Worker id", value: worker.id, isMonospaced: true)
+            }
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            }
+        }
+    }
+
+    private var activeJobText: String {
+        worker.raw["activeJobName"] ?? worker.raw["activeJobId"] ?? "No active job"
+    }
+
+    private var statusText: String {
+        (worker.raw["status"] ?? "unknown").lowercased()
+    }
+
+    private var statusColor: Color {
+        switch statusText {
+        case "processing", "active": .blue
+        case "idle", "waiting": .green
+        case "stalled", "unhealthy": .orange
+        case "failed", "offline": .red
+        default: .secondary
+        }
+    }
+
+    private var statusIcon: String {
+        switch statusText {
+        case "processing", "active": "bolt.fill"
+        case "idle", "waiting": "pause.fill"
+        case "stalled", "unhealthy": "exclamationmark.triangle.fill"
+        case "failed", "offline": "xmark"
+        default: "questionmark"
+        }
+    }
+
+    private var heartbeatText: String {
+        guard let raw = worker.raw["lastHeartbeatAt"],
+              let milliseconds = Double(raw) else {
+            return "unknown"
+        }
+
+        let date = Date(timeIntervalSince1970: milliseconds / 1000)
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        if seconds < 60 {
+            return "\(seconds)s ago"
+        }
+        if seconds < 3_600 {
+            return "\(seconds / 60)m ago"
+        }
+        if seconds < 86_400 {
+            return "\(seconds / 3_600)h ago"
+        }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+}
+
+private struct WorkerDetailRow: View {
+    let icon: String
+    let tint: Color
+    let label: String
+    let value: String
+    var isMonospaced = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(tint.opacity(0.14))
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 32, height: 32)
+
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 118, alignment: .leading)
+
+            Text(value)
+                .font(isMonospaced ? .callout.monospaced() : .callout)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
     }
 }
 
