@@ -1,0 +1,25 @@
+.DS_Store
+
+# Swift / Xcode build output
+.build/
+DerivedData/
+build/
+
+# Xcode user-local state
+xcuserdata/
+*.xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager generated workspace artifacts
+.swiftpm/
+
+# macOS / editor noise
+*.swp
+*.swo
+
+# Local scripts/dependencies used while seeding demo Redis data
+node_modules/
+package-lock.json

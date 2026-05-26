@@ -1,0 +1,109 @@
+import Foundation
+import Network
+
+actor RedisRESPClient {
+    private var connection: NWConnection?
+    private var parser = RESPParser()
+
+    func connect(_ config: RedisConnectionConfig) async throws {
+        let parameters: NWParameters = config.useTLS ? .tls : .tcp
+        let connection = NWConnection(
+            host: NWEndpoint.Host(config.host),
+            port: NWEndpoint.Port(rawValue: UInt16(config.port)) ?? 6379,
+            using: parameters
+        )
+        self.connection = connection
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.stateUpdateHandler = nil
+                    continuation.resume()
+                case .failed(let error):
+                    connection.stateUpdateHandler = nil
+                    continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                default:
+                    break
+                }
+            }
+            connection.start(queue: .global(qos: .userInitiated))
+        }
+
+        if let password = config.password, !password.isEmpty {
+            if let username = config.username, !username.isEmpty {
+                _ = try await command(["AUTH", username, password])
+            } else {
+                _ = try await command(["AUTH", password])
+            }
+        }
+        if config.database > 0 {
+            _ = try await command(["SELECT", String(config.database)])
+        }
+    }
+
+    func disconnect() {
+        connection?.cancel()
+        connection = nil
+    }
+
+    func command(_ parts: [String]) async throws -> RESPValue {
+        guard let connection else { throw BullMQDashboardError.notConnected }
+        let payload = encode(parts)
+        try await send(payload, on: connection)
+
+        while true {
+            if let parsed = try parser.parseNext() {
+                if case .error(let message) = parsed {
+                    throw BullMQDashboardError.redis(message)
+                }
+                return parsed
+            }
+            let chunk = try await receive(on: connection)
+            parser.append(chunk)
+        }
+    }
+
+    private func encode(_ parts: [String]) -> Data {
+        var data = Data("*\(parts.count)\r\n".utf8)
+        for part in parts {
+            let bytes = Data(part.utf8)
+            data.append(Data("$\(bytes.count)\r\n".utf8))
+            data.append(bytes)
+            data.append(Data("\r\n".utf8))
+        }
+        return data
+    }
+
+    private func send(_ data: Data, on connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error {
+                    continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    private func receive(on connection: NWConnection) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 131_072) { data, _, isComplete, error in
+                if let error {
+                    continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                    return
+                }
+                if let data, !data.isEmpty {
+                    continuation.resume(returning: data)
+                    return
+                }
+                if isComplete {
+                    continuation.resume(throwing: BullMQDashboardError.redis("Redis closed the connection."))
+                    return
+                }
+                continuation.resume(throwing: BullMQDashboardError.redis("Redis returned an empty response."))
+            }
+        }
+    }
+}

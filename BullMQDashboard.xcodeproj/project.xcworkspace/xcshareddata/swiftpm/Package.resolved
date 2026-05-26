@@ -1,0 +1,15 @@
+{
+  "originHash" : "5113d4003bbe9564d13090ff1a3e2ac28c26fc258358d265c46382d10d09b40c",
+  "pins" : [
+    {
+      "identity" : "highlight",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nkristek/Highlight.git",
+      "state" : {
+        "revision" : "8e0908cb4b88f629fd8041b361f081ec8486c056",
+        "version" : "0.4.0"
+      }
+    }
+  ],
+  "version" : 3
+}

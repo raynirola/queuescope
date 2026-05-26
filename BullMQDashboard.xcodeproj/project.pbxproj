@@ -1,0 +1,580 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000100 /* Highlight in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000A02 /* Highlight */; };
+		100000000000000000000101 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000201 /* AppModel.swift */; };
+		100000000000000000000102 /* BullMQDashboardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000202 /* BullMQDashboardApp.swift */; };
+		100000000000000000000103 /* BullMQRedisEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* BullMQRedisEngine.swift */; };
+		100000000000000000000104 /* RESPValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000204 /* RESPValue.swift */; };
+		100000000000000000000105 /* RedisRESPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000205 /* RedisRESPClient.swift */; };
+		100000000000000000000106 /* RedisURLParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000206 /* RedisURLParser.swift */; };
+		100000000000000000000107 /* BullMQEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000207 /* BullMQEngine.swift */; };
+		100000000000000000000108 /* BullMQModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000208 /* BullMQModels.swift */; };
+		100000000000000000000109 /* BullMQParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000209 /* BullMQParsing.swift */; };
+		10000000000000000000010A /* ConnectionProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020A /* ConnectionProfileStore.swift */; };
+		10000000000000000000010B /* KeychainCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020B /* KeychainCredentialStore.swift */; };
+		10000000000000000000010C /* MetricSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020C /* MetricSnapshotStore.swift */; };
+		10000000000000000000010D /* DashboardRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020D /* DashboardRootView.swift */; };
+		10000000000000000000010E /* JobInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020E /* JobInspectorView.swift */; };
+		10000000000000000000010F /* JobTableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020F /* JobTableView.swift */; };
+		100000000000000000000110 /* QueueDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000210 /* QueueDashboardView.swift */; };
+		100000000000000000000111 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000211 /* SidebarView.swift */; };
+		100000000000000000000112 /* BullMQParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000212 /* BullMQParsingTests.swift */; };
+		100000000000000000000113 /* RedisURLParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* RedisURLParserTests.swift */; };
+		100000000000000000000114 /* RESPParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* RESPParserTests.swift */; };
+		100000000000000000000115 /* JSONSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000216 /* JSONSyntaxHighlighter.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		100000000000000000000901 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 100000000000000000000701 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 100000000000000000000501;
+			remoteInfo = BullMQDashboard;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		100000000000000000000001 /* BullMQDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BullMQDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		100000000000000000000201 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		100000000000000000000202 /* BullMQDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQDashboardApp.swift; sourceTree = "<group>"; };
+		100000000000000000000203 /* BullMQRedisEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQRedisEngine.swift; sourceTree = "<group>"; };
+		100000000000000000000204 /* RESPValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RESPValue.swift; sourceTree = "<group>"; };
+		100000000000000000000205 /* RedisRESPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedisRESPClient.swift; sourceTree = "<group>"; };
+		100000000000000000000206 /* RedisURLParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedisURLParser.swift; sourceTree = "<group>"; };
+		100000000000000000000207 /* BullMQEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQEngine.swift; sourceTree = "<group>"; };
+		100000000000000000000208 /* BullMQModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQModels.swift; sourceTree = "<group>"; };
+		100000000000000000000209 /* BullMQParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQParsing.swift; sourceTree = "<group>"; };
+		10000000000000000000020A /* ConnectionProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionProfileStore.swift; sourceTree = "<group>"; };
+		10000000000000000000020B /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
+		10000000000000000000020C /* MetricSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricSnapshotStore.swift; sourceTree = "<group>"; };
+		10000000000000000000020D /* DashboardRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardRootView.swift; sourceTree = "<group>"; };
+		10000000000000000000020E /* JobInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobInspectorView.swift; sourceTree = "<group>"; };
+		10000000000000000000020F /* JobTableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobTableView.swift; sourceTree = "<group>"; };
+		100000000000000000000210 /* QueueDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueDashboardView.swift; sourceTree = "<group>"; };
+		100000000000000000000211 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		100000000000000000000212 /* BullMQParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQParsingTests.swift; sourceTree = "<group>"; };
+		100000000000000000000213 /* RedisURLParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedisURLParserTests.swift; sourceTree = "<group>"; };
+		100000000000000000000214 /* RESPParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RESPParserTests.swift; sourceTree = "<group>"; };
+		100000000000000000000215 /* BullMQDashboardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BullMQDashboardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		100000000000000000000216 /* JSONSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONSyntaxHighlighter.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		100000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000100 /* Highlight in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		100000000000000000000304 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		100000000000000000000401 = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000402 /* BullMQDashboard */,
+				100000000000000000000409 /* BullMQDashboardTests */,
+				100000000000000000000403 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		100000000000000000000402 /* BullMQDashboard */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000404 /* App */,
+				100000000000000000000405 /* BullMQRedisEngine */,
+				100000000000000000000406 /* Domain */,
+				100000000000000000000407 /* Persistence */,
+				100000000000000000000408 /* UI */,
+			);
+			path = BullMQDashboard;
+			sourceTree = "<group>";
+		};
+		100000000000000000000403 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000001 /* BullMQDashboard.app */,
+				100000000000000000000215 /* BullMQDashboardTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		100000000000000000000404 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000201 /* AppModel.swift */,
+				100000000000000000000202 /* BullMQDashboardApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		100000000000000000000405 /* BullMQRedisEngine */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000203 /* BullMQRedisEngine.swift */,
+				100000000000000000000204 /* RESPValue.swift */,
+				100000000000000000000205 /* RedisRESPClient.swift */,
+				100000000000000000000206 /* RedisURLParser.swift */,
+			);
+			path = BullMQRedisEngine;
+			sourceTree = "<group>";
+		};
+		100000000000000000000406 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000207 /* BullMQEngine.swift */,
+				100000000000000000000208 /* BullMQModels.swift */,
+				100000000000000000000209 /* BullMQParsing.swift */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		100000000000000000000407 /* Persistence */ = {
+			isa = PBXGroup;
+			children = (
+				10000000000000000000020A /* ConnectionProfileStore.swift */,
+				10000000000000000000020B /* KeychainCredentialStore.swift */,
+				10000000000000000000020C /* MetricSnapshotStore.swift */,
+			);
+			path = Persistence;
+			sourceTree = "<group>";
+		};
+		100000000000000000000408 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				10000000000000000000020D /* DashboardRootView.swift */,
+				10000000000000000000020E /* JobInspectorView.swift */,
+				10000000000000000000020F /* JobTableView.swift */,
+				100000000000000000000216 /* JSONSyntaxHighlighter.swift */,
+				100000000000000000000210 /* QueueDashboardView.swift */,
+				100000000000000000000211 /* SidebarView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		100000000000000000000409 /* BullMQDashboardTests */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000212 /* BullMQParsingTests.swift */,
+				100000000000000000000213 /* RedisURLParserTests.swift */,
+				100000000000000000000214 /* RESPParserTests.swift */,
+			);
+			path = BullMQDashboardTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		100000000000000000000501 /* BullMQDashboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 100000000000000000000601 /* Build configuration list for PBXNativeTarget "BullMQDashboard" */;
+			buildPhases = (
+				100000000000000000000302 /* Sources */,
+				100000000000000000000301 /* Frameworks */,
+				100000000000000000000303 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BullMQDashboard;
+			packageProductDependencies = (
+				100000000000000000000A02 /* Highlight */,
+			);
+			productName = BullMQDashboard;
+			productReference = 100000000000000000000001 /* BullMQDashboard.app */;
+			productType = "com.apple.product-type.application";
+		};
+		100000000000000000000502 /* BullMQDashboardTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 100000000000000000000603 /* Build configuration list for PBXNativeTarget "BullMQDashboardTests" */;
+			buildPhases = (
+				100000000000000000000305 /* Sources */,
+				100000000000000000000304 /* Frameworks */,
+				100000000000000000000306 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				100000000000000000000902 /* PBXTargetDependency */,
+			);
+			name = BullMQDashboardTests;
+			packageProductDependencies = (
+			);
+			productName = BullMQDashboardTests;
+			productReference = 100000000000000000000215 /* BullMQDashboardTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		100000000000000000000701 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					100000000000000000000501 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+				};
+			};
+			buildConfigurationList = 100000000000000000000602 /* Build configuration list for PBXProject "BullMQDashboard" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 100000000000000000000401;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				100000000000000000000A01 /* XCRemoteSwiftPackageReference "Highlight" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 100000000000000000000403 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				100000000000000000000501 /* BullMQDashboard */,
+				100000000000000000000502 /* BullMQDashboardTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		100000000000000000000303 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		100000000000000000000306 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		100000000000000000000302 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000101 /* AppModel.swift in Sources */,
+				100000000000000000000102 /* BullMQDashboardApp.swift in Sources */,
+				100000000000000000000103 /* BullMQRedisEngine.swift in Sources */,
+				100000000000000000000104 /* RESPValue.swift in Sources */,
+				100000000000000000000105 /* RedisRESPClient.swift in Sources */,
+				100000000000000000000106 /* RedisURLParser.swift in Sources */,
+				100000000000000000000107 /* BullMQEngine.swift in Sources */,
+				100000000000000000000108 /* BullMQModels.swift in Sources */,
+				100000000000000000000109 /* BullMQParsing.swift in Sources */,
+				10000000000000000000010A /* ConnectionProfileStore.swift in Sources */,
+				10000000000000000000010B /* KeychainCredentialStore.swift in Sources */,
+				10000000000000000000010C /* MetricSnapshotStore.swift in Sources */,
+				10000000000000000000010D /* DashboardRootView.swift in Sources */,
+				10000000000000000000010E /* JobInspectorView.swift in Sources */,
+				10000000000000000000010F /* JobTableView.swift in Sources */,
+				100000000000000000000115 /* JSONSyntaxHighlighter.swift in Sources */,
+				100000000000000000000110 /* QueueDashboardView.swift in Sources */,
+				100000000000000000000111 /* SidebarView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		100000000000000000000305 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000112 /* BullMQParsingTests.swift in Sources */,
+				100000000000000000000113 /* RedisURLParserTests.swift in Sources */,
+				100000000000000000000114 /* RESPParserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		100000000000000000000902 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 100000000000000000000501 /* BullMQDashboard */;
+			targetProxy = 100000000000000000000901 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		100000000000000000000801 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		100000000000000000000802 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		100000000000000000000803 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TH48DG8RVN;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "BullMQ Dashboard";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboard;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		100000000000000000000804 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TH48DG8RVN;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "BullMQ Dashboard";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboard;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		100000000000000000000805 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboardTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BullMQDashboard.app/Contents/MacOS/BullMQDashboard";
+			};
+			name = Debug;
+		};
+		100000000000000000000806 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboardTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BullMQDashboard.app/Contents/MacOS/BullMQDashboard";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		100000000000000000000601 /* Build configuration list for PBXNativeTarget "BullMQDashboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				100000000000000000000803 /* Debug */,
+				100000000000000000000804 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		100000000000000000000602 /* Build configuration list for PBXProject "BullMQDashboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				100000000000000000000801 /* Debug */,
+				100000000000000000000802 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		100000000000000000000603 /* Build configuration list for PBXNativeTarget "BullMQDashboardTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				100000000000000000000805 /* Debug */,
+				100000000000000000000806 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		100000000000000000000A01 /* XCRemoteSwiftPackageReference "Highlight" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/nkristek/Highlight.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.4.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		100000000000000000000A02 /* Highlight */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 100000000000000000000A01 /* XCRemoteSwiftPackageReference "Highlight" */;
+			productName = Highlight;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 100000000000000000000701 /* Project object */;
+}
