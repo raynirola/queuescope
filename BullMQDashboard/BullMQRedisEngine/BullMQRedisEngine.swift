@@ -98,9 +98,20 @@ actor BullMQRedisEngine: BullMQEngine {
 
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {
         let keys = try await scan(match: "\(prefix):\(queueName):*worker*", limit: 250)
-        return keys.map {
-            WorkerSummary(id: $0, queueName: queueName, name: $0.components(separatedBy: ":").last ?? $0, raw: ["key": $0])
+        var workers: [WorkerSummary] = []
+        for key in keys.sorted() {
+            var fields = try await hgetall(key)
+            fields["key"] = key
+            workers.append(
+                WorkerSummary(
+                    id: key,
+                    queueName: queueName,
+                    name: fields["name"] ?? key.components(separatedBy: ":").last ?? key,
+                    raw: fields
+                )
+            )
         }
+        return workers
     }
 
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary] {
