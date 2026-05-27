@@ -4,6 +4,8 @@ import Network
 actor RedisRESPClient {
     private var connection: NWConnection?
     private var parser = RESPParser()
+    private let connectTimeout: TimeInterval = 12
+    private let commandTimeout: TimeInterval = 12
 
     func connect(_ config: RedisConnectionConfig) async throws {
         let parameters: NWParameters = config.useTLS ? .tls : .tcp
@@ -15,14 +17,39 @@ actor RedisRESPClient {
         self.connection = connection
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let gate = AsyncCompletionGate()
+            let timeout = DispatchWorkItem {
+                gate.complete {
+                    connection.stateUpdateHandler = nil
+                    connection.cancel()
+                    continuation.resume(throwing: BullMQDashboardError.redis("Timed out connecting to Redis. Check the host, port, network, and TLS setting."))
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + connectTimeout, execute: timeout)
+
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    connection.stateUpdateHandler = nil
-                    continuation.resume()
+                    gate.complete {
+                        connection.stateUpdateHandler = nil
+                        continuation.resume()
+                    }
+                case .waiting(let error):
+                    gate.complete {
+                        connection.stateUpdateHandler = nil
+                        connection.cancel()
+                        continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                    }
                 case .failed(let error):
-                    connection.stateUpdateHandler = nil
-                    continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                    gate.complete {
+                        connection.stateUpdateHandler = nil
+                        continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                    }
+                case .cancelled:
+                    gate.complete {
+                        connection.stateUpdateHandler = nil
+                        continuation.resume(throwing: BullMQDashboardError.redis("Redis connection was cancelled."))
+                    }
                 default:
                     break
                 }
@@ -77,11 +104,21 @@ actor RedisRESPClient {
 
     private func send(_ data: Data, on connection: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let gate = AsyncCompletionGate()
+            let timeout = DispatchWorkItem {
+                gate.complete {
+                    continuation.resume(throwing: BullMQDashboardError.redis("Timed out sending command to Redis."))
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + commandTimeout, execute: timeout)
+
             connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
-                } else {
-                    continuation.resume()
+                gate.complete {
+                    if let error {
+                        continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                    } else {
+                        continuation.resume()
+                    }
                 }
             })
         }
@@ -89,21 +126,47 @@ actor RedisRESPClient {
 
     private func receive(on connection: NWConnection) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
+            let gate = AsyncCompletionGate()
+            let timeout = DispatchWorkItem {
+                gate.complete {
+                    continuation.resume(throwing: BullMQDashboardError.redis("Timed out waiting for Redis response."))
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + commandTimeout, execute: timeout)
+
             connection.receive(minimumIncompleteLength: 1, maximumLength: 131_072) { data, _, isComplete, error in
-                if let error {
-                    continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
-                    return
+                gate.complete {
+                    if let error {
+                        continuation.resume(throwing: BullMQDashboardError.redis(error.localizedDescription))
+                        return
+                    }
+                    if let data, !data.isEmpty {
+                        continuation.resume(returning: data)
+                        return
+                    }
+                    if isComplete {
+                        continuation.resume(throwing: BullMQDashboardError.redis("Redis closed the connection."))
+                        return
+                    }
+                    continuation.resume(throwing: BullMQDashboardError.redis("Redis returned an empty response."))
                 }
-                if let data, !data.isEmpty {
-                    continuation.resume(returning: data)
-                    return
-                }
-                if isComplete {
-                    continuation.resume(throwing: BullMQDashboardError.redis("Redis closed the connection."))
-                    return
-                }
-                continuation.resume(throwing: BullMQDashboardError.redis("Redis returned an empty response."))
             }
         }
+    }
+}
+
+private final class AsyncCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isComplete = false
+
+    func complete(_ operation: () -> Void) {
+        lock.lock()
+        guard !isComplete else {
+            lock.unlock()
+            return
+        }
+        isComplete = true
+        lock.unlock()
+        operation()
     }
 }

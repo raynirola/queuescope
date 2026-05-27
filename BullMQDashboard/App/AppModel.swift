@@ -45,10 +45,20 @@ final class AppModel: ObservableObject {
     func connect() async {
         await runLoading {
             let parsed = try RedisURLParser.parse(redisURL, prefix: prefix)
+            statusMessage = "Connecting to \(parsed.host):\(parsed.port)…"
             try await engine.connect(parsed)
             config = parsed
             isConnected = true
             statusMessage = "Connected to \(parsed.host):\(parsed.port)"
+            Task { await refreshQueuesAfterConnect(prefix: parsed.prefix) }
+        }
+    }
+
+    func refreshQueuesAfterConnect(prefix: String? = nil) async {
+        await runLoading {
+            if let prefix {
+                statusMessage = "Discovering BullMQ queues with prefix \(prefix)…"
+            }
             try await loadQueues()
         }
     }
@@ -106,8 +116,10 @@ final class AppModel: ObservableObject {
     }
 
     func loadQueues() async throws {
+        statusMessage = "Scanning Redis for BullMQ queue metadata. Large databases can take a moment…"
         let queueSummaries = try await engine.discoverQueues(prefix: prefix)
         queues = queueSummaries
+        statusMessage = queueSummaries.isEmpty ? "Connected, no queues found for prefix \(prefix)" : "Found \(queueSummaries.count) queues"
         if selectedQueue == nil || !queueSummaries.contains(where: { $0.name == selectedQueue?.name }) {
             selectedQueue = queueSummaries.first
             selectedState = nil
@@ -121,6 +133,27 @@ final class AppModel: ObservableObject {
         selectedJob = nil
         selectedJobDetail = nil
         Task { await refreshSelectedQueue() }
+    }
+
+    func addManualQueue(named rawName: String) async {
+        let name = normalizedManualQueueName(rawName)
+        guard !name.isEmpty else { return }
+
+        await runLoading {
+            statusMessage = "Loading queue \(name)…"
+            let overview = try await engine.getQueueOverview(queueName: name, prefix: prefix)
+            if let index = queues.firstIndex(where: { $0.name == name }) {
+                queues[index] = overview
+            } else {
+                queues.append(overview)
+                queues.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+            selectedQueue = overview
+            selectedState = nil
+            selectedJob = nil
+            selectedJobDetail = nil
+            try await refreshSelectedQueueThrowing()
+        }
     }
 
     func refreshSelectedQueue() async {
@@ -148,13 +181,18 @@ final class AppModel: ObservableObject {
 
     private func refreshSelectedQueueThrowing() async throws {
         guard let selectedQueue else { return }
+        statusMessage = "Loading \(selectedQueue.name) overview…"
         let overview = try await engine.getQueueOverview(queueName: selectedQueue.name, prefix: prefix)
         replaceQueue(overview)
         self.selectedQueue = overview
 
+        statusMessage = "Loading \(selectedQueue.name) runs…"
         jobs = try await loadJobs(queueName: selectedQueue.name)
+        statusMessage = "Loading \(selectedQueue.name) workers…"
         workers = try await engine.getWorkers(queueName: selectedQueue.name, prefix: prefix)
+        statusMessage = "Loading \(selectedQueue.name) schedulers…"
         schedulers = try await engine.getSchedulers(queueName: selectedQueue.name, prefix: prefix)
+        statusMessage = "Recording \(selectedQueue.name) metrics snapshot…"
         if let snapshot = try await engine.getMetrics(queueName: selectedQueue.name, prefix: prefix).first {
             snapshotStore.append(snapshot)
             snapshots = snapshotStore.load()
@@ -214,6 +252,18 @@ final class AppModel: ObservableObject {
         if let index = queues.firstIndex(where: { $0.name == queue.name }) {
             queues[index] = queue
         }
+    }
+
+    private func normalizedManualQueueName(_ rawName: String) -> String {
+        var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixStart = "\(prefix):"
+        if name.hasPrefix(prefixStart) {
+            name.removeFirst(prefixStart.count)
+        }
+        if name.hasSuffix(":meta") {
+            name.removeLast(":meta".count)
+        }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func runLoading(_ operation: () async throws -> Void) async {

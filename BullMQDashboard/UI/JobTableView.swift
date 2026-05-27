@@ -4,7 +4,7 @@ struct JobTableView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("Runs", systemImage: "list.bullet.rectangle")
                     .font(.subheadline.weight(.semibold))
@@ -17,7 +17,7 @@ struct JobTableView: View {
             if model.jobs.isEmpty {
                 RunsEmptyState(state: model.selectedState)
             } else {
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     RunsHeader()
                     ForEach(Array(model.jobs.enumerated()), id: \.element.id) { index, job in
                         RunsRow(

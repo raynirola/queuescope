@@ -55,13 +55,50 @@ struct QueueDashboardView: View {
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
             } else {
-                ContentUnavailableView(
-                    "Connect to Redis",
-                    systemImage: "server.rack",
-                    description: Text("Enter a Redis URL to discover BullMQ queues.")
-                )
+                emptyState
             }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.secondary.opacity(0.08))
+                    .frame(width: 58, height: 58)
+
+                if model.isLoading {
+                    ProgressView()
+                        .controlSize(.regular)
+                } else {
+                    Image(systemName: model.isConnected ? "server.rack" : "externaldrive.badge.plus")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(spacing: 6) {
+                Text(emptyStateTitle)
+                    .font(.title2.weight(.semibold))
+                Text(emptyStateDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var emptyStateTitle: String {
+        if model.isLoading { return "Loading Redis" }
+        return model.isConnected ? "Select a queue" : "Connect to Redis"
+    }
+
+    private var emptyStateDescription: String {
+        if model.isLoading { return model.statusMessage }
+        return model.isConnected ? "Queue details will appear here once discovery finds a queue." : "Enter a Redis URL to discover BullMQ queues."
     }
 
     @ViewBuilder
@@ -117,7 +154,7 @@ struct QueueDashboardView: View {
         let hasFailures = model.jobs.contains { $0.state == .failed }
         let hasSchedulers = !model.schedulers.isEmpty
 
-        VStack(spacing: 12) {
+        VStack(spacing: 18) {
             if hasTrendData {
                 MetricsPanel(queueName: queue.name)
             }

@@ -3,6 +3,8 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
     @State private var queueSearch = ""
+    @State private var isManualQueuePopoverVisible = false
+    @State private var manualQueueName = ""
     let showConnectionManager: () -> Void
 
     var body: some View {
@@ -22,21 +24,13 @@ struct SidebarView: View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    SidebarSectionHeader(title: "Queues")
+                    queueSectionHeader
                         .padding(.horizontal, 18)
                         .padding(.top, 12)
                         .padding(.bottom, 8)
 
                     if filteredQueues.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("No queues found")
-                                .font(.callout.weight(.medium))
-                            Text("Try another queue name.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
+                        queueListEmptyState
                     } else {
                         ForEach(filteredQueues) { queue in
                             QueueSidebarRow(
@@ -62,6 +56,33 @@ struct SidebarView: View {
         }
     }
 
+    private var queueSectionHeader: some View {
+        HStack(spacing: 8) {
+            SidebarSectionHeader(title: "Queues")
+
+            Spacer()
+
+            Button {
+                isManualQueuePopoverVisible = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(model.isConnected ? .secondary : .tertiary)
+            .disabled(!model.isConnected)
+            .help(model.isConnected ? "Add queue manually" : "Connect to Redis first")
+            .popover(isPresented: $isManualQueuePopoverVisible, arrowEdge: .trailing) {
+                ManualQueuePopover(
+                    queueName: $manualQueueName,
+                    prefix: model.prefix,
+                    addQueue: addManualQueue
+                )
+            }
+        }
+    }
+
     private var sidebarHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
@@ -79,7 +100,13 @@ struct SidebarView: View {
             }
 
             HStack(spacing: 6) {
-                StatusDot(color: model.isConnected ? .green : .secondary)
+                if model.isLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 8, height: 8)
+                } else {
+                    StatusDot(color: model.isConnected ? .green : .secondary)
+                }
                 Text(connectionLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -104,6 +131,75 @@ struct SidebarView: View {
             queue.name.localizedCaseInsensitiveContains(query) ||
                 queue.name.titleCasedQueueName.localizedCaseInsensitiveContains(query)
         }
+    }
+
+    private var queueListEmptyState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if model.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: emptyStateIcon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(emptyStateTitle)
+                    .font(.callout.weight(.medium))
+            }
+
+            Text(emptyStateDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if model.isConnected, !model.isLoading {
+                Button {
+                    isManualQueuePopoverVisible = true
+                } label: {
+                    Label("Add queue manually", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.medium))
+                .popover(isPresented: $isManualQueuePopoverVisible, arrowEdge: .trailing) {
+                    ManualQueuePopover(
+                        queueName: $manualQueueName,
+                        prefix: model.prefix,
+                        addQueue: addManualQueue
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+    }
+
+    private func addManualQueue() {
+        let name = manualQueueName
+        isManualQueuePopoverVisible = false
+        manualQueueName = ""
+        Task {
+            await model.addManualQueue(named: name)
+        }
+    }
+
+    private var emptyStateIcon: String {
+        if !model.isConnected { return "externaldrive.badge.plus" }
+        if !queueSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "magnifyingglass" }
+        return "server.rack"
+    }
+
+    private var emptyStateTitle: String {
+        if model.isLoading { return "Working…" }
+        if !queueSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "No matching queues" }
+        return model.isConnected ? "No queues found" : "Not connected"
+    }
+
+    private var emptyStateDescription: String {
+        if model.isLoading { return model.statusMessage }
+        if !queueSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Try another queue name." }
+        return model.isConnected ? "No BullMQ queues were found for prefix \(model.prefix)." : "Open Connections to connect to Redis."
     }
 }
 
@@ -140,6 +236,48 @@ private struct QueueSearchBar: View {
                 .strokeBorder(Color.primary.opacity(0.10))
         }
         .shadow(color: .black.opacity(0.10), radius: 14, x: 0, y: 8)
+    }
+}
+
+private struct ManualQueuePopover: View {
+    @Binding var queueName: String
+    let prefix: String
+    let addQueue: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Add Queue")
+                    .font(.headline)
+                Text("Enter a BullMQ queue name. Redis keys like \(prefix):queue:meta are accepted too.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            TextField("queue-name", text: $queueName)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onSubmit(addIfValid)
+
+            HStack {
+                Spacer()
+                Button("Add", action: addIfValid)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(queueName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(14)
+        .frame(width: 285)
+        .onAppear {
+            isFocused = true
+        }
+    }
+
+    private func addIfValid() {
+        guard !queueName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        addQueue()
     }
 }
 
@@ -356,10 +494,10 @@ struct ConnectionManagerView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            StatusDot(color: model.isConnected ? .green : .secondary)
-            Text(model.statusMessage)
+            StatusDot(color: footerColor)
+            Text(model.lastError ?? model.statusMessage)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(footerTextColor)
                 .lineLimit(1)
             Spacer()
             if model.isLoading {
@@ -369,6 +507,15 @@ struct ConnectionManagerView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private var footerColor: Color {
+        if model.lastError != nil { return .red }
+        return model.isConnected ? .green : .secondary
+    }
+
+    private var footerTextColor: Color {
+        model.lastError == nil ? .secondary : .red
     }
 }
 

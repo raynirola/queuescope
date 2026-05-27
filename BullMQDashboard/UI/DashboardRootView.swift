@@ -25,8 +25,15 @@ struct DashboardRootView: View {
 
             ToolbarItemGroup {
                 if model.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(model.statusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: 280, alignment: .trailing)
                 }
                 Button {
                     Task { await model.refreshSelectedQueue() }

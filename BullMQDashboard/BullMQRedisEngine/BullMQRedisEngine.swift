@@ -4,6 +4,8 @@ actor BullMQRedisEngine: BullMQEngine {
     private var redis: RedisRESPClient?
     private var config: RedisConnectionConfig?
     private let scanLimit = 2_000
+    private let scanPageLimit = 500
+    private let discoveryScanPageLimit = 25
 
     func connect(_ config: RedisConnectionConfig) async throws {
         let client = RedisRESPClient()
@@ -19,8 +21,14 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func discoverQueues(prefix: String) async throws -> [QueueSummary] {
-        let keys = try await scan(match: "\(prefix):*:meta", limit: scanLimit)
-        let names = keys.compactMap { BullMQParsing.parseQueueName(fromMetaKey: $0, prefix: prefix) }
+        let metaKeys = try await scan(
+            match: "\(prefix):*:meta",
+            limit: scanLimit,
+            maxPages: discoveryScanPageLimit,
+            stopAfterFirstResultPage: true
+        )
+        let names = metaKeys.compactMap { BullMQParsing.parseQueueName(fromMetaKey: $0, prefix: prefix) }
+
         var summaries: [QueueSummary] = []
         for name in Set(names).sorted() {
             summaries.append(try await getQueueOverview(queueName: name, prefix: prefix))
@@ -97,7 +105,7 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {
-        let keys = try await scan(match: "\(prefix):\(queueName):*worker*", limit: 250)
+        let keys = try await scan(match: "\(prefix):\(queueName):*worker*", limit: 250, maxPages: scanPageLimit)
         var workers: [WorkerSummary] = []
         for key in keys.sorted() {
             var fields = try await hgetall(key)
@@ -115,7 +123,7 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary] {
-        let repeatKeys = try await scan(match: "\(prefix):\(queueName):repeat*", limit: 250)
+        let repeatKeys = try await scan(match: "\(prefix):\(queueName):repeat*", limit: 250, maxPages: scanPageLimit)
         return repeatKeys.map {
             SchedulerSummary(id: $0, queueName: queueName, name: $0.components(separatedBy: ":").last ?? $0, nextRun: nil, raw: ["key": $0])
         }
@@ -190,16 +198,25 @@ actor BullMQRedisEngine: BullMQEngine {
         return addedAt.addingTimeInterval(Double(delay) / 1000)
     }
 
-    private func scan(match: String, limit: Int) async throws -> [String] {
+    private func scan(match: String, limit: Int, maxPages: Int? = nil, stopAfterFirstResultPage: Bool = false) async throws -> [String] {
         var cursor = "0"
         var keys: [String] = []
+        var pages = 0
         repeat {
-            let response = try await command(["SCAN", cursor, "MATCH", match, "COUNT", "100"])
+            pages += 1
+            let response = try await command(["SCAN", cursor, "MATCH", match, "COUNT", "1000"])
             guard case .array(let values?) = response, values.count == 2 else { break }
             cursor = values[0].string ?? "0"
-            keys.append(contentsOf: arrayStrings(values[1]))
+            let pageKeys = arrayStrings(values[1])
+            keys.append(contentsOf: pageKeys)
+            if stopAfterFirstResultPage, !pageKeys.isEmpty {
+                return Array(keys.prefix(limit))
+            }
             if keys.count >= limit {
                 return Array(keys.prefix(limit))
+            }
+            if let maxPages, pages >= maxPages {
+                break
             }
         } while cursor != "0"
         return keys
