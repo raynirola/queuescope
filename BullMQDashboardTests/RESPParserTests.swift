@@ -35,4 +35,19 @@ final class RESPParserTests: XCTestCase {
             ])
         )
     }
+
+    func testParsesPipelinedResponsesInOrder() throws {
+        var parser = RESPParser()
+        parser.append(Data(":8\r\n*2\r\n$3\r\none\r\n$3\r\ntwo\r\n+OK\r\n".utf8))
+
+        XCTAssertEqual(try parser.parseNext(), .integer(8))
+        XCTAssertEqual(
+            try parser.parseNext(),
+            .array([
+                .bulkString("one"),
+                .bulkString("two")
+            ])
+        )
+        XCTAssertEqual(try parser.parseNext(), .simpleString("OK"))
+    }
 }

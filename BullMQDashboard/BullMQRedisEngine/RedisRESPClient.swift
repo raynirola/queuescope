@@ -75,20 +75,39 @@ actor RedisRESPClient {
     }
 
     func command(_ parts: [String]) async throws -> RESPValue {
+        try await commands([parts])[0]
+    }
+
+    func commands(_ commands: [[String]]) async throws -> [RESPValue] {
         guard let connection else { throw BullMQDashboardError.notConnected }
-        let payload = encode(parts)
+        guard !commands.isEmpty else { return [] }
+        let payload = encode(commands)
         try await send(payload, on: connection)
 
-        while true {
+        var responses: [RESPValue] = []
+        responses.reserveCapacity(commands.count)
+
+        while responses.count < commands.count {
             if let parsed = try parser.parseNext() {
                 if case .error(let message) = parsed {
                     throw BullMQDashboardError.redis(message)
                 }
-                return parsed
+                responses.append(parsed)
+                continue
             }
             let chunk = try await receive(on: connection)
             parser.append(chunk)
         }
+
+        return responses
+    }
+
+    private func encode(_ commands: [[String]]) -> Data {
+        var data = Data()
+        for command in commands {
+            data.append(encode(command))
+        }
+        return data
     }
 
     private func encode(_ parts: [String]) -> Data {

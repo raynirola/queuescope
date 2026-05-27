@@ -6,6 +6,17 @@ actor BullMQRedisEngine: BullMQEngine {
     private let scanLimit = 2_000
     private let scanPageLimit = 500
     private let discoveryScanPageLimit = 25
+    private let jobSummaryFields = [
+        "name",
+        "timestamp",
+        "processedOn",
+        "finishedOn",
+        "opts",
+        "atm",
+        "attemptsMade",
+        "failedReason",
+        "data"
+    ]
 
     func connect(_ config: RedisConnectionConfig) async throws {
         let client = RedisRESPClient()
@@ -37,15 +48,25 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary {
+        let responses = try await commands([
+            ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "wait")],
+            ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "active")],
+            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "delayed")],
+            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "prioritized")],
+            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "completed")],
+            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "failed")],
+            ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "paused")],
+            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "waiting-children")]
+        ])
         let counts = QueueCounts(
-            waiting: try await llen(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "wait")),
-            active: try await llen(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "active")),
-            delayed: try await zcard(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "delayed")),
-            prioritized: try await zcard(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "prioritized")),
-            completed: try await zcard(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "completed")),
-            failed: try await zcard(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "failed")),
-            paused: try await llen(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "paused")),
-            waitingChildren: try await zcard(BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "waiting-children"))
+            waiting: responses[safe: 0]?.int ?? 0,
+            active: responses[safe: 1]?.int ?? 0,
+            delayed: responses[safe: 2]?.int ?? 0,
+            prioritized: responses[safe: 3]?.int ?? 0,
+            completed: responses[safe: 4]?.int ?? 0,
+            failed: responses[safe: 5]?.int ?? 0,
+            paused: responses[safe: 6]?.int ?? 0,
+            waitingChildren: responses[safe: 7]?.int ?? 0
         )
         return QueueSummary(
             name: queueName,
@@ -59,18 +80,40 @@ actor BullMQRedisEngine: BullMQEngine {
         let start = max(0, page * pageSize)
         let stop = start + pageSize - 1
         let key = stateKey(prefix: prefix, queueName: queueName, state: state)
-        let total = try await count(for: state, key: key)
-        let entries = try await jobEntries(for: state, key: key, start: start, stop: stop)
-        var jobs: [JobSummary] = []
-        for entry in entries {
-            let id = entry.id
-            let fields = try await hgetall(BullMQParsing.jobKey(prefix: prefix, queue: queueName, jobID: id))
-            if fields.isEmpty {
-                continue
-            }
-            jobs.append(makeJobSummary(queueName: queueName, state: state, id: id, fields: fields, score: entry.score))
-        }
+        let responses = try await commands([
+            countCommand(for: state, key: key),
+            jobEntriesCommand(for: state, key: key, start: start, stop: stop)
+        ])
+        let total = responses[safe: 0]?.int ?? 0
+        let entries = jobEntries(for: state, response: responses[safe: 1] ?? .array([]))
+        let jobs = try await jobSummaries(queueName: queueName, prefix: prefix, state: state, entries: entries)
         return JobPage(jobs: jobs, total: total, page: page, pageSize: pageSize)
+    }
+
+    func getRecentJobs(queueName: String, prefix: String, states: [BullMQState], perStateLimit: Int, totalLimit: Int) async throws -> [JobSummary] {
+        let cappedPerStateLimit = max(1, perStateLimit)
+        let stop = cappedPerStateLimit - 1
+        var batch: [[String]] = []
+
+        for state in states {
+            let key = stateKey(prefix: prefix, queueName: queueName, state: state)
+            batch.append(jobEntriesCommand(for: state, key: key, start: 0, stop: stop))
+        }
+
+        let responses = try await commands(batch)
+        var allJobs: [JobSummary] = []
+        for (index, state) in states.enumerated() {
+            let entries = jobEntries(for: state, response: responses[safe: index] ?? .array([]))
+            let jobs = try await jobSummaries(queueName: queueName, prefix: prefix, state: state, entries: entries)
+            allJobs.append(contentsOf: jobs)
+        }
+
+        return allJobs
+            .sorted { lhs, rhs in
+                jobSortDate(lhs) > jobSortDate(rhs)
+            }
+            .prefix(totalLimit)
+            .map { $0 }
     }
 
     func getJobDetail(queueName: String, prefix: String, jobID: String, state: BullMQState) async throws -> JobDetail {
@@ -106,9 +149,11 @@ actor BullMQRedisEngine: BullMQEngine {
 
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {
         let keys = try await scan(match: "\(prefix):\(queueName):*worker*", limit: 250, maxPages: scanPageLimit)
+        let sortedKeys = keys.sorted()
+        let responses = try await commands(sortedKeys.map { ["HGETALL", $0] })
         var workers: [WorkerSummary] = []
-        for key in keys.sorted() {
-            var fields = try await hgetall(key)
+        for (index, key) in sortedKeys.enumerated() {
+            var fields = hgetallFields(responses[safe: index] ?? .array([]))
             fields["key"] = key
             workers.append(
                 WorkerSummary(
@@ -134,23 +179,31 @@ actor BullMQRedisEngine: BullMQEngine {
         return BullMQParsing.key(prefix: prefix, queue: queueName, suffix: suffix)
     }
 
-    private func count(for state: BullMQState, key: String) async throws -> Int {
+    private func countCommand(for state: BullMQState, key: String) -> [String] {
         switch state {
         case .waiting, .active, .paused:
-            try await llen(key)
+            ["LLEN", key]
         case .delayed, .prioritized, .completed, .failed, .waitingChildren:
-            try await zcard(key)
+            ["ZCARD", key]
         }
     }
 
-    private func jobEntries(for state: BullMQState, key: String, start: Int, stop: Int) async throws -> [(id: String, score: Double?)] {
-        let response: RESPValue
+    private func jobEntriesCommand(for state: BullMQState, key: String, start: Int, stop: Int) -> [String] {
         switch state {
         case .waiting, .active, .paused:
-            response = try await command(["LRANGE", key, String(start), String(stop)])
+            ["LRANGE", key, String(start), String(stop)]
+        case .delayed:
+            ["ZREVRANGE", key, String(start), String(stop), "WITHSCORES"]
+        case .prioritized, .completed, .failed, .waitingChildren:
+            ["ZREVRANGE", key, String(start), String(stop)]
+        }
+    }
+
+    private func jobEntries(for state: BullMQState, response: RESPValue) -> [(id: String, score: Double?)] {
+        switch state {
+        case .waiting, .active, .paused:
             return arrayStrings(response).map { (id: $0, score: nil) }
         case .delayed:
-            response = try await command(["ZREVRANGE", key, String(start), String(stop), "WITHSCORES"])
             let values = arrayStrings(response)
             var entries: [(id: String, score: Double?)] = []
             var index = 0
@@ -160,9 +213,32 @@ actor BullMQRedisEngine: BullMQEngine {
             }
             return entries
         case .prioritized, .completed, .failed, .waitingChildren:
-            response = try await command(["ZREVRANGE", key, String(start), String(stop)])
             return arrayStrings(response).map { (id: $0, score: nil) }
         }
+    }
+
+    private func jobSummaries(queueName: String, prefix: String, state: BullMQState, entries: [(id: String, score: Double?)]) async throws -> [JobSummary] {
+        guard !entries.isEmpty else { return [] }
+        let batch = entries.map { entry in
+            ["HMGET", BullMQParsing.jobKey(prefix: prefix, queue: queueName, jobID: entry.id)] + jobSummaryFields
+        }
+        let responses = try await commands(batch)
+        var jobs: [JobSummary] = []
+
+        for (index, response) in responses.enumerated() {
+            let values = responseArray(response)
+            guard values.contains(where: { $0 != nil }) else { continue }
+            var fields: [String: String] = [:]
+            for (fieldIndex, fieldName) in jobSummaryFields.enumerated() {
+                if let value = values[safe: fieldIndex] ?? nil {
+                    fields[fieldName] = value
+                }
+            }
+            let entry = entries[index]
+            jobs.append(makeJobSummary(queueName: queueName, state: state, id: entry.id, fields: fields, score: entry.score))
+        }
+
+        return jobs
     }
 
     private func makeJobSummary(queueName: String, state: BullMQState, id: String, fields: [String: String], score: Double? = nil) -> JobSummary {
@@ -198,6 +274,10 @@ actor BullMQRedisEngine: BullMQEngine {
         return addedAt.addingTimeInterval(Double(delay) / 1000)
     }
 
+    private func jobSortDate(_ job: JobSummary) -> Date {
+        job.finishedOn ?? job.processedOn ?? job.delayedUntil ?? job.timestamp ?? .distantPast
+    }
+
     private func scan(match: String, limit: Int, maxPages: Int? = nil, stopAfterFirstResultPage: Bool = false) async throws -> [String] {
         var cursor = "0"
         var keys: [String] = []
@@ -222,16 +302,12 @@ actor BullMQRedisEngine: BullMQEngine {
         return keys
     }
 
-    private func llen(_ key: String) async throws -> Int {
-        try await command(["LLEN", key]).int ?? 0
-    }
-
-    private func zcard(_ key: String) async throws -> Int {
-        try await command(["ZCARD", key]).int ?? 0
-    }
-
     private func hgetall(_ key: String) async throws -> [String: String] {
-        let values = arrayStrings(try await command(["HGETALL", key]))
+        hgetallFields(try await command(["HGETALL", key]))
+    }
+
+    private func hgetallFields(_ response: RESPValue) -> [String: String] {
+        let values = arrayStrings(response)
         var fields: [String: String] = [:]
         var index = 0
         while index + 1 < values.count {
@@ -246,9 +322,25 @@ actor BullMQRedisEngine: BullMQEngine {
         return try await redis.command(parts)
     }
 
+    private func commands(_ batch: [[String]]) async throws -> [RESPValue] {
+        guard let redis else { throw BullMQDashboardError.notConnected }
+        return try await redis.commands(batch)
+    }
+
     private func arrayStrings(_ value: RESPValue) -> [String] {
         guard case .array(let values?) = value else { return [] }
         return values.compactMap(\.string)
+    }
+
+    private func responseArray(_ value: RESPValue) -> [String?] {
+        guard case .array(let values?) = value else { return [] }
+        return values.map(\.string)
+    }
+}
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

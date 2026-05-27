@@ -6,7 +6,6 @@ struct DashboardRootView: View {
     @State private var isInspectorVisible = false
     @State private var isConnectionManagerVisible = false
     @State private var didPresentInitialConnectionManager = false
-    @State private var selectedView: QueueWorkspaceView = .overview
 
     var body: some View {
         rootSplit
@@ -84,7 +83,7 @@ struct DashboardRootView: View {
                     .background(sidebarBackground)
             }
 
-            WorkspaceViewSidebar(selectedView: $selectedView)
+            WorkspaceViewSidebar()
                 .frame(minWidth: 205, idealWidth: 220, maxWidth: 250, maxHeight: .infinity)
                 .background(sidebarBackground)
 
@@ -98,7 +97,7 @@ struct DashboardRootView: View {
 
     private var mainPanel: some View {
         ZStack(alignment: .trailing) {
-            QueueDashboardView(selectedView: selectedView)
+            QueueDashboardView(selectedView: model.selectedView)
                 .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
 
             inspectorDrawer
@@ -131,7 +130,6 @@ struct DashboardRootView: View {
 
 private struct WorkspaceViewSidebar: View {
     @EnvironmentObject private var model: AppModel
-    @Binding var selectedView: QueueWorkspaceView
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,10 +147,10 @@ private struct WorkspaceViewSidebar: View {
                         .padding(.bottom, 8)
 
                     ForEach(QueueWorkspaceView.allCases) { view in
-                        WorkspaceViewRow(view: view, isSelected: selectedView == view)
+                        WorkspaceViewRow(view: view, isSelected: model.selectedView == view)
                             .contentShape(RoundedRectangle(cornerRadius: 10))
                             .onTapGesture {
-                                selectedView = view
+                                model.selectWorkspaceView(view)
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 3)

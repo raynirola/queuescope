@@ -33,4 +33,18 @@ final class RedisURLParserTests: XCTestCase {
             "redis://user:****@localhost:6379/0"
         )
     }
+
+    func testQueueNameStorePersistsNamesByScope() {
+        let suiteName = "QueueNameStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = QueueNameStore(defaults: defaults)
+
+        store.save(["email", "reports", "email"], scope: "local:6379/0:bull")
+        store.save(["video"], scope: "prod:6379/0:bull")
+
+        XCTAssertEqual(store.load(scope: "local:6379/0:bull"), ["email", "reports"])
+        XCTAssertEqual(store.load(scope: "prod:6379/0:bull"), ["video"])
+        XCTAssertEqual(store.load(scope: "missing"), [])
+    }
 }

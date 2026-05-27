@@ -6,6 +6,7 @@ protocol BullMQEngine: Sendable {
     func discoverQueues(prefix: String) async throws -> [QueueSummary]
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary
     func getJobs(queueName: String, prefix: String, state: BullMQState, page: Int, pageSize: Int) async throws -> JobPage
+    func getRecentJobs(queueName: String, prefix: String, states: [BullMQState], perStateLimit: Int, totalLimit: Int) async throws -> [JobSummary]
     func getJobDetail(queueName: String, prefix: String, jobID: String, state: BullMQState) async throws -> JobDetail
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot]
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary]
