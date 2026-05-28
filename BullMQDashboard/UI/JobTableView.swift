@@ -9,10 +9,29 @@ struct JobTableView: View {
                 Label("Runs", systemImage: "list.bullet.rectangle")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(loadedText)
+                LoadingSpinnerSlot(isVisible: model.activeLoadingPhases.contains(.runs))
+                Text(model.runPageRangeText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Button {
+                        model.goToPreviousRunPage()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!model.canGoToPreviousRunPage)
+
+                    Button {
+                        model.goToNextRunPage()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!model.canGoToNextRunPage)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
             }
+            .frame(height: 20)
 
             if model.jobs.isEmpty {
                 RunsEmptyState(state: model.selectedState)
@@ -39,13 +58,6 @@ struct JobTableView: View {
         }
     }
 
-    private var loadedText: String {
-        if let state = model.selectedState {
-            return "\(model.jobs.count) \(state.displayName.lowercased())"
-        }
-        return "\(model.jobs.count) loaded"
-    }
-
     private func attemptText(_ job: JobSummary) -> String {
         if let attempts = job.attempts {
             return "\(job.attemptsMade)/\(attempts)"
@@ -55,10 +67,7 @@ struct JobTableView: View {
 
     private func durationText(_ duration: TimeInterval?) -> String {
         guard let duration else { return "—" }
-        if duration < 1 {
-            return "\(Int(duration * 1000))ms"
-        }
-        return String(format: "%.2fs", duration)
+        return duration.compactDurationDisplay
     }
 
     private func ageText(_ job: JobSummary) -> String {
@@ -91,6 +100,19 @@ struct JobTableView: View {
         case .failed: .red
         case .paused: .gray
         }
+    }
+}
+
+private struct LoadingSpinnerSlot: View {
+    let isVisible: Bool
+
+    var body: some View {
+        ProgressView()
+            .controlSize(.small)
+            .frame(width: 16, height: 16)
+            .opacity(isVisible ? 1 : 0)
+            .accessibilityHidden(!isVisible)
+            .help(isVisible ? "Refreshing runs" : "")
     }
 }
 

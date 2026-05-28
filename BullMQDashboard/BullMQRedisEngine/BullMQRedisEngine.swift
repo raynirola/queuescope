@@ -5,7 +5,6 @@ actor BullMQRedisEngine: BullMQEngine {
     private var config: RedisConnectionConfig?
     private let scanLimit = 2_000
     private let scanPageLimit = 500
-    private let discoveryScanPageLimit = 25
     private let jobSummaryFields = [
         "name",
         "timestamp",
@@ -31,24 +30,16 @@ actor BullMQRedisEngine: BullMQEngine {
         config = nil
     }
 
-    func discoverQueues(prefix: String) async throws -> [QueueSummary] {
-        let metaKeys = try await scan(
-            match: "\(prefix):*:meta",
-            limit: scanLimit,
-            maxPages: discoveryScanPageLimit,
-            stopAfterFirstResultPage: true
+    func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary {
+        makeQueueSummary(
+            queueName: queueName,
+            prefix: prefix,
+            responses: try await commands(overviewCommands(queueName: queueName, prefix: prefix))
         )
-        let names = metaKeys.compactMap { BullMQParsing.parseQueueName(fromMetaKey: $0, prefix: prefix) }
-
-        var summaries: [QueueSummary] = []
-        for name in Set(names).sorted() {
-            summaries.append(try await getQueueOverview(queueName: name, prefix: prefix))
-        }
-        return summaries
     }
 
-    func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary {
-        let responses = try await commands([
+    private func overviewCommands(queueName: String, prefix: String) -> [[String]] {
+        [
             ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "wait")],
             ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "active")],
             ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "delayed")],
@@ -57,7 +48,10 @@ actor BullMQRedisEngine: BullMQEngine {
             ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "failed")],
             ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "paused")],
             ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "waiting-children")]
-        ])
+        ]
+    }
+
+    private func makeQueueSummary(queueName: String, prefix: String, responses: [RESPValue]) -> QueueSummary {
         let counts = QueueCounts(
             waiting: responses[safe: 0]?.int ?? 0,
             active: responses[safe: 1]?.int ?? 0,
@@ -168,10 +162,93 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary] {
-        let repeatKeys = try await scan(match: "\(prefix):\(queueName):repeat*", limit: 250, maxPages: scanPageLimit)
-        return repeatKeys.map {
-            SchedulerSummary(id: $0, queueName: queueName, name: $0.components(separatedBy: ":").last ?? $0, nextRun: nil, raw: ["key": $0])
+        let repeatKey = BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "repeat")
+        let repeatSchedulers = schedulerSummariesFromRepeatSet(
+            try await command(["ZRANGE", repeatKey, "0", "-1", "WITHSCORES"]),
+            queueName: queueName,
+            repeatKey: repeatKey
+        )
+        if !repeatSchedulers.isEmpty {
+            return repeatSchedulers
         }
+
+        let repeatJobs = try await getRecentJobs(
+            queueName: queueName,
+            prefix: prefix,
+            states: [.delayed, .waiting, .completed, .failed],
+            perStateLimit: 25,
+            totalLimit: 100
+        )
+        return schedulerSummariesFromRepeatJobs(repeatJobs, queueName: queueName, repeatKey: repeatKey)
+    }
+
+    private func schedulerSummariesFromRepeatSet(_ response: RESPValue, queueName: String, repeatKey: String) -> [SchedulerSummary] {
+        let values = arrayStrings(response)
+        var schedulers: [SchedulerSummary] = []
+        var index = 0
+        while index < values.count {
+            let repeatMember = values[index]
+            let score = index + 1 < values.count ? values[index + 1] : nil
+            schedulers.append(
+                SchedulerSummary(
+                    id: "\(repeatKey):\(repeatMember)",
+                    queueName: queueName,
+                    name: schedulerName(fromRepeatMember: repeatMember),
+                    nextRun: BullMQParsing.dateFromMilliseconds(score),
+                    raw: [
+                        "key": "\(repeatKey):\(repeatMember)",
+                        "repeatKey": repeatMember,
+                        "source": "repeat-set"
+                    ]
+                )
+            )
+            index += 2
+        }
+        return schedulers
+    }
+
+    private func schedulerSummariesFromRepeatJobs(_ jobs: [JobSummary], queueName: String, repeatKey: String) -> [SchedulerSummary] {
+        var schedulersByKey: [String: SchedulerSummary] = [:]
+
+        for job in jobs where job.id.hasPrefix("repeat:") {
+            let parts = job.id.components(separatedBy: ":")
+            guard parts.count >= 3 else { continue }
+            let timestamp = parts.last
+            let repeatMember = parts.dropFirst().dropLast().joined(separator: ":")
+            guard !repeatMember.isEmpty else { continue }
+            let id = "\(repeatKey):\(repeatMember)"
+
+            if let existing = schedulersByKey[id],
+               let existingRun = existing.nextRun,
+               let nextRun = job.delayedUntil,
+               existingRun <= nextRun {
+                continue
+            }
+
+            schedulersByKey[id] = SchedulerSummary(
+                id: id,
+                queueName: queueName,
+                name: schedulerName(fromRepeatMember: repeatMember),
+                nextRun: job.delayedUntil ?? BullMQParsing.dateFromMilliseconds(timestamp),
+                raw: [
+                    "key": "\(repeatKey):\(repeatMember):\(timestamp ?? "")",
+                    "repeatKey": repeatMember,
+                    "source": "repeat-job"
+                ]
+            )
+        }
+        return schedulersByKey.values.sorted { $0.name < $1.name }
+    }
+
+    private func schedulerName(fromRepeatMember repeatMember: String) -> String {
+        repeatMember
+            .components(separatedBy: ":")
+            .first(where: { !$0.isEmpty && !isMilliseconds($0) }) ?? repeatMember
+    }
+
+    private func isMilliseconds(_ value: String) -> Bool {
+        guard let number = Double(value) else { return false }
+        return number > 1_000_000_000_000
     }
 
     private func stateKey(prefix: String, queueName: String, state: BullMQState) -> String {

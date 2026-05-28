@@ -3,7 +3,6 @@ import Foundation
 protocol BullMQEngine: Sendable {
     func connect(_ config: RedisConnectionConfig) async throws
     func disconnect() async
-    func discoverQueues(prefix: String) async throws -> [QueueSummary]
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary
     func getJobs(queueName: String, prefix: String, state: BullMQState, page: Int, pageSize: Int) async throws -> JobPage
     func getRecentJobs(queueName: String, prefix: String, states: [BullMQState], perStateLimit: Int, totalLimit: Int) async throws -> [JobSummary]

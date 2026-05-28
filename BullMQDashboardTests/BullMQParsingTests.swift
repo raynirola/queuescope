@@ -45,6 +45,34 @@ final class BullMQParsingTests: XCTestCase {
         failing.completed = 20
         XCTAssertEqual(BullMQParsing.health(from: failing), .failing)
     }
+
+    func testQueueDisplayNameFallsBackToTitleCasedQueueName() {
+        XCTAssertEqual(
+            QueueSummary(name: "setup-inboxkit-mailbox-v2", prefix: "bull", counts: .empty, health: .unknown).resolvedDisplayName,
+            "Setup Inboxkit Mailbox V2"
+        )
+        XCTAssertEqual(
+            QueueSummary(name: "setup-inboxkit-mailbox-v2", displayName: "Inbox setup", prefix: "bull", counts: .empty, health: .unknown).resolvedDisplayName,
+            "Inbox setup"
+        )
+    }
+
+    func testCompactCountDisplayKeepsLargeNumbersShort() {
+        XCTAssertEqual(870.compactCountDisplay, "870")
+        XCTAssertEqual(1_200.compactCountDisplay, "1.2K")
+        XCTAssertEqual(216_401.compactCountDisplay, "216K")
+        XCTAssertEqual(573_000.compactCountDisplay, "573K")
+        XCTAssertEqual(1_250_000.compactCountDisplay, "1.2M")
+    }
+
+    func testCompactDurationDisplayUsesHumanUnits() {
+        XCTAssertEqual(TimeInterval(0.078).compactDurationDisplay, "78ms")
+        XCTAssertEqual(TimeInterval(5.68).compactDurationDisplay, "5.7s")
+        XCTAssertEqual(TimeInterval(45).compactDurationDisplay, "45s")
+        XCTAssertEqual(TimeInterval(95).compactDurationDisplay, "1.5m")
+        XCTAssertEqual(TimeInterval(15_623.95).compactDurationDisplay, "4.3h")
+        XCTAssertEqual(TimeInterval(172_800).compactDurationDisplay, "2d")
+    }
 }
 
 @MainActor
@@ -64,22 +92,7 @@ final class AppModelRefreshTests: XCTestCase {
 
     func testRunsRefreshLoadsOnlyOverviewAndRuns() async {
         let engine = FakeBullMQEngine()
-        engine.recentJobs = [
-            JobSummary(
-                id: "1",
-                queueName: "email",
-                state: .failed,
-                name: "send-email",
-                timestamp: nil,
-                processedOn: nil,
-                finishedOn: nil,
-                delayedUntil: nil,
-                attemptsMade: 1,
-                attempts: 3,
-                failedReason: "boom",
-                payloadPreview: "{}"
-            )
-        ]
+        engine.recentJobs = [makeJob(id: "1", queueName: "email", state: .failed)]
         let model = AppModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
 
@@ -87,9 +100,30 @@ final class AppModelRefreshTests: XCTestCase {
 
         XCTAssertEqual(engine.overviewCalls, ["email"])
         XCTAssertEqual(engine.recentJobsCalls, ["email"])
+        XCTAssertEqual(engine.recentJobsLimits, [11])
         XCTAssertTrue(engine.workerCalls.isEmpty)
         XCTAssertTrue(engine.schedulerCalls.isEmpty)
         XCTAssertEqual(model.jobs.map(\.id), ["1"])
+    }
+
+    func testRunsUseTenItemPages() async {
+        let engine = FakeBullMQEngine()
+        engine.recentJobs = (1...21).map {
+            makeJob(id: "\($0)", queueName: "email", state: .waiting)
+        }
+        let model = AppModel(engine: engine)
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+
+        await model.refreshSelectedQueue(for: .runs)
+        XCTAssertEqual(model.jobs.count, 10)
+        XCTAssertTrue(model.canGoToNextRunPage)
+
+        model.goToNextRunPage()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(model.runPage, 1)
+        XCTAssertEqual(model.jobs.count, 10)
+        XCTAssertEqual(model.jobs.first?.id, "11")
     }
 
     func testStaleRefreshCannotOverwriteNewerQueueSelection() async {
@@ -108,11 +142,41 @@ final class AppModelRefreshTests: XCTestCase {
 
         XCTAssertEqual(model.selectedQueue?.name, "second")
     }
+
+    func testManualQueueCanUseHumanReadableDisplayName() async {
+        let engine = FakeBullMQEngine()
+        let model = AppModel(engine: engine)
+        model.prefix = "bull"
+
+        await model.addManualQueue(named: "bull:setup-inboxkit-mailbox-v2:meta", displayName: "Inbox setup")
+
+        XCTAssertEqual(model.queues.first?.name, "setup-inboxkit-mailbox-v2")
+        XCTAssertEqual(model.queues.first?.displayName, "Inbox setup")
+        XCTAssertEqual(model.selectedQueue?.resolvedDisplayName, "Inbox setup")
+    }
+}
+
+private func makeJob(id: String, queueName: String, state: BullMQState) -> JobSummary {
+    JobSummary(
+        id: id,
+        queueName: queueName,
+        state: state,
+        name: "send-email",
+        timestamp: nil,
+        processedOn: nil,
+        finishedOn: nil,
+        delayedUntil: nil,
+        attemptsMade: 1,
+        attempts: 3,
+        failedReason: state == .failed ? "boom" : nil,
+        payloadPreview: "{}"
+    )
 }
 
 private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     var overviewCalls: [String] = []
     var recentJobsCalls: [String] = []
+    var recentJobsLimits: [Int] = []
     var workerCalls: [String] = []
     var schedulerCalls: [String] = []
     var overviewDelayByQueue: [String: UInt64] = [:]
@@ -121,10 +185,6 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     func connect(_ config: RedisConnectionConfig) async throws {}
 
     func disconnect() async {}
-
-    func discoverQueues(prefix: String) async throws -> [QueueSummary] {
-        []
-    }
 
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary {
         overviewCalls.append(queueName)
@@ -140,6 +200,7 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
 
     func getRecentJobs(queueName: String, prefix: String, states: [BullMQState], perStateLimit: Int, totalLimit: Int) async throws -> [JobSummary] {
         recentJobsCalls.append(queueName)
+        recentJobsLimits.append(totalLimit)
         return Array(recentJobs.prefix(totalLimit))
     }
 

@@ -22,26 +22,6 @@ struct DashboardRootView: View {
                 .help(isSidebarVisible ? "Hide queue list" : "Show queue list")
             }
 
-            ToolbarItemGroup {
-                if model.isLoading {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(model.statusMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: 280, alignment: .trailing)
-                }
-                Button {
-                    Task { await model.refreshSelectedQueue() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(!model.isConnected || model.selectedQueue == nil)
-            }
-
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     isInspectorVisible.toggle()
@@ -172,7 +152,7 @@ private struct WorkspaceViewSidebar: View {
                 Text("Workspace")
                     .font(.headline)
             }
-            Text(model.selectedQueue?.name.titleCasedQueueName ?? "Select a queue")
+            Text(model.selectedQueue?.resolvedDisplayName ?? "Select a queue")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

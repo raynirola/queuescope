@@ -5,6 +5,7 @@ struct SidebarView: View {
     @State private var queueSearch = ""
     @State private var isManualQueuePopoverVisible = false
     @State private var manualQueueName = ""
+    @State private var manualQueueDisplayName = ""
     let showConnectionManager: () -> Void
 
     var body: some View {
@@ -76,6 +77,7 @@ struct SidebarView: View {
             .popover(isPresented: $isManualQueuePopoverVisible, arrowEdge: .trailing) {
                 ManualQueuePopover(
                     queueName: $manualQueueName,
+                    displayName: $manualQueueDisplayName,
                     prefix: model.prefix,
                     addQueue: addManualQueue
                 )
@@ -100,13 +102,16 @@ struct SidebarView: View {
             }
 
             HStack(spacing: 6) {
-                if model.isLoading {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .frame(width: 8, height: 8)
-                } else {
-                    StatusDot(color: model.isConnected ? .green : .secondary)
+                Group {
+                    if model.isLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        StatusDot(color: model.isConnected ? .green : .secondary)
+                    }
                 }
+                .frame(width: 10, height: 10)
+
                 Text(connectionLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -129,7 +134,7 @@ struct SidebarView: View {
         guard !query.isEmpty else { return model.queues }
         return model.queues.filter { queue in
             queue.name.localizedCaseInsensitiveContains(query) ||
-                queue.name.titleCasedQueueName.localizedCaseInsensitiveContains(query)
+                queue.resolvedDisplayName.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -165,6 +170,7 @@ struct SidebarView: View {
                 .popover(isPresented: $isManualQueuePopoverVisible, arrowEdge: .trailing) {
                     ManualQueuePopover(
                         queueName: $manualQueueName,
+                        displayName: $manualQueueDisplayName,
                         prefix: model.prefix,
                         addQueue: addManualQueue
                     )
@@ -177,10 +183,12 @@ struct SidebarView: View {
 
     private func addManualQueue() {
         let name = manualQueueName
+        let displayName = manualQueueDisplayName
         isManualQueuePopoverVisible = false
         manualQueueName = ""
+        manualQueueDisplayName = ""
         Task {
-            await model.addManualQueue(named: name)
+            await model.addManualQueue(named: name, displayName: displayName)
         }
     }
 
@@ -193,13 +201,13 @@ struct SidebarView: View {
     private var emptyStateTitle: String {
         if model.isLoading { return "Working…" }
         if !queueSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "No matching queues" }
-        return model.isConnected ? "No queues found" : "Not connected"
+        return model.isConnected ? "No queues added" : "Not connected"
     }
 
     private var emptyStateDescription: String {
         if model.isLoading { return model.statusMessage }
         if !queueSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Try another queue name." }
-        return model.isConnected ? "No BullMQ queues were found for prefix \(model.prefix)." : "Open Connections to connect to Redis."
+        return model.isConnected ? "Add a BullMQ queue by name to start watching it." : "Open Connections to connect to Redis."
     }
 }
 
@@ -241,6 +249,7 @@ private struct QueueSearchBar: View {
 
 private struct ManualQueuePopover: View {
     @Binding var queueName: String
+    @Binding var displayName: String
     let prefix: String
     let addQueue: () -> Void
     @FocusState private var isFocused: Bool
@@ -256,10 +265,27 @@ private struct ManualQueuePopover: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            TextField("queue-name", text: $queueName)
-                .textFieldStyle(.roundedBorder)
-                .focused($isFocused)
-                .onSubmit(addIfValid)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Queue name")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("setup-inboxkit-mailbox-v2", text: $queueName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .onSubmit(addIfValid)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Display name")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField(queueNamePreview, text: $displayName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(addIfValid)
+                Text("Optional. If empty, the app formats the queue name.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 Spacer()
@@ -269,10 +295,24 @@ private struct ManualQueuePopover: View {
             }
         }
         .padding(14)
-        .frame(width: 285)
+        .frame(width: 305)
         .onAppear {
             isFocused = true
         }
+    }
+
+    private var queueNamePreview: String {
+        let name = queueName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "Setup Inboxkit Mailbox V2" }
+        var normalized = name
+        let prefixStart = "\(prefix):"
+        if normalized.hasPrefix(prefixStart) {
+            normalized.removeFirst(prefixStart.count)
+        }
+        if normalized.hasSuffix(":meta") {
+            normalized.removeLast(":meta".count)
+        }
+        return normalized.titleCasedQueueName
     }
 
     private func addIfValid() {
@@ -621,7 +661,7 @@ private struct QueueSidebarRow: View {
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(queue.name.titleCasedQueueName)
+                Text(queue.resolvedDisplayName)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(isSelected ? .white : .primary)
                     .lineLimit(1)
@@ -701,7 +741,7 @@ private struct QueueMiniCount: View {
     let color: Color
 
     var body: some View {
-        Text(value > 0 ? "\(value) \(label)" : label)
+        Text(value > 0 ? "\(value.compactCountDisplay) \(label)" : label)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(value > 0 ? color : .secondary)
             .lineLimit(1)

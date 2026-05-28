@@ -50,4 +50,14 @@ final class RESPParserTests: XCTestCase {
         )
         XCTAssertEqual(try parser.parseNext(), .simpleString("OK"))
     }
+
+    func testParsesBackToBackPipelineBatchesInOrder() throws {
+        var parser = RESPParser()
+        parser.append(Data(":1\r\n:2\r\n:3\r\n:4\r\n".utf8))
+
+        XCTAssertEqual(try parser.parseNext(), .integer(1))
+        XCTAssertEqual(try parser.parseNext(), .integer(2))
+        XCTAssertEqual(try parser.parseNext(), .integer(3))
+        XCTAssertEqual(try parser.parseNext(), .integer(4))
+    }
 }

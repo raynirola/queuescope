@@ -17,6 +17,7 @@
 		100000000000000000000107 /* BullMQEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000207 /* BullMQEngine.swift */; };
 		100000000000000000000108 /* BullMQModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000208 /* BullMQModels.swift */; };
 		100000000000000000000109 /* BullMQParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000209 /* BullMQParsing.swift */; };
+		100000000000000000000116 /* DisplayFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000217 /* DisplayFormatting.swift */; };
 		10000000000000000000010A /* ConnectionProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020A /* ConnectionProfileStore.swift */; };
 		10000000000000000000010B /* KeychainCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020B /* KeychainCredentialStore.swift */; };
 		10000000000000000000010C /* MetricSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000020C /* MetricSnapshotStore.swift */; };
@@ -52,6 +53,7 @@
 		100000000000000000000207 /* BullMQEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQEngine.swift; sourceTree = "<group>"; };
 		100000000000000000000208 /* BullMQModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQModels.swift; sourceTree = "<group>"; };
 		100000000000000000000209 /* BullMQParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQParsing.swift; sourceTree = "<group>"; };
+		100000000000000000000217 /* DisplayFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayFormatting.swift; sourceTree = "<group>"; };
 		10000000000000000000020A /* ConnectionProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionProfileStore.swift; sourceTree = "<group>"; };
 		10000000000000000000020B /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
 		10000000000000000000020C /* MetricSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricSnapshotStore.swift; sourceTree = "<group>"; };
@@ -142,6 +144,7 @@
 				100000000000000000000207 /* BullMQEngine.swift */,
 				100000000000000000000208 /* BullMQModels.swift */,
 				100000000000000000000209 /* BullMQParsing.swift */,
+				100000000000000000000217 /* DisplayFormatting.swift */,
 			);
 			path = Domain;
 			sourceTree = "<group>";
@@ -291,6 +294,7 @@
 				100000000000000000000107 /* BullMQEngine.swift in Sources */,
 				100000000000000000000108 /* BullMQModels.swift in Sources */,
 				100000000000000000000109 /* BullMQParsing.swift in Sources */,
+				100000000000000000000116 /* DisplayFormatting.swift in Sources */,
 				10000000000000000000010A /* ConnectionProfileStore.swift in Sources */,
 				10000000000000000000010B /* KeychainCredentialStore.swift in Sources */,
 				10000000000000000000010C /* MetricSnapshotStore.swift in Sources */,

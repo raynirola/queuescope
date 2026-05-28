@@ -4,6 +4,7 @@ import Network
 actor RedisRESPClient {
     private var connection: NWConnection?
     private var parser = RESPParser()
+    private let commandGate = AsyncCommandGate()
     private let connectTimeout: TimeInterval = 12
     private let commandTimeout: TimeInterval = 12
 
@@ -81,6 +82,11 @@ actor RedisRESPClient {
     func commands(_ commands: [[String]]) async throws -> [RESPValue] {
         guard let connection else { throw BullMQDashboardError.notConnected }
         guard !commands.isEmpty else { return [] }
+        await commandGate.wait()
+        defer {
+            Task { await commandGate.signal() }
+        }
+
         let payload = encode(commands)
         try await send(payload, on: connection)
 
@@ -170,6 +176,30 @@ actor RedisRESPClient {
                     continuation.resume(throwing: BullMQDashboardError.redis("Redis returned an empty response."))
                 }
             }
+        }
+    }
+}
+
+private actor AsyncCommandGate {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        if waiters.isEmpty {
+            isLocked = false
+        } else {
+            waiters.removeFirst().resume()
         }
     }
 }

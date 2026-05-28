@@ -98,7 +98,7 @@ struct QueueDashboardView: View {
 
     private var emptyStateDescription: String {
         if model.isLoading { return model.statusMessage }
-        return model.isConnected ? "Queue details will appear here once discovery finds a queue." : "Enter a Redis URL to discover BullMQ queues."
+        return model.isConnected ? "Add a queue manually or select one from the queue list." : "Enter a Redis URL, then add BullMQ queues by name."
     }
 
     @ViewBuilder
@@ -117,7 +117,7 @@ struct QueueDashboardView: View {
         case .workers:
             WorkersPanel(style: .detailed)
         case .metrics:
-            MetricsPanel(queueName: queue.name)
+            MetricsPanel(queue: queue, style: .detailed)
         }
     }
 
@@ -128,7 +128,7 @@ struct QueueDashboardView: View {
                     .font(.system(size: 28, weight: .semibold, design: .default))
                     .tracking(-0.2)
                     .lineLimit(1)
-                Text("\(queue.name.titleCasedQueueName) · \(queue.prefix):\(queue.name) · \(queue.health.label)")
+                Text("\(queue.resolvedDisplayName) · \(queue.prefix):\(queue.name) · \(queue.health.label)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -156,7 +156,7 @@ struct QueueDashboardView: View {
 
         VStack(spacing: 18) {
             if hasTrendData {
-                MetricsPanel(queueName: queue.name)
+                MetricsPanel(queue: queue, style: .compact)
             }
 
             if hasWorkers {
@@ -231,7 +231,7 @@ private struct CompactMetric: View {
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .topTrailing) {
-                Text(value.formatted())
+                Text(value.compactCountDisplay)
                     .font(.system(size: 24, weight: .semibold, design: .default).monospacedDigit())
                     .foregroundStyle(value > 0 ? .primary : .secondary)
                     .lineLimit(1)
@@ -336,60 +336,260 @@ private struct HealthBadge: View {
 
 private struct MetricsPanel: View {
     @EnvironmentObject private var model: AppModel
-    let queueName: String
+    let queue: QueueSummary
+    var style: MetricsPanelStyle = .compact
 
+    @ViewBuilder
     var body: some View {
-        let snapshots = model.snapshots
-                .filter { $0.queueName == queueName }
-                .sorted { $0.capturedAt < $1.capturedAt }
-                .suffix(40)
-        let points = throughputPoints(Array(snapshots))
+        let snapshots = recentSnapshots
+        let points = throughputPoints(snapshots)
+        let previousCounts = snapshots.dropLast().last?.counts
 
-        VStack(alignment: .leading, spacing: 12) {
-            header(points: points)
-            if snapshots.isEmpty {
-                SectionEmptyState(
+        if style == .detailed {
+            VStack(alignment: .leading, spacing: 34) {
+                MetricSettingsSection(
+                    title: "Queue pressure",
+                    subtitle: "Live queue shape and retry signals",
+                    icon: "gauge.with.dots.needle.67percent",
+                    tint: .green,
+                    trailing: snapshots.count == 1 ? "1 sample" : "\(snapshots.count.formatted()) samples"
+                ) {
+                    VStack(spacing: 0) {
+                        SignalMetricRow(
+                            title: "Backlog",
+                            value: backlog.compactCountDisplay,
+                            caption: backlogCaption,
+                            icon: "tray.full",
+                            tint: backlog == 0 ? .green : .teal
+                        )
+                        Divider().padding(.leading, 58)
+                        SignalMetricRow(
+                            title: "Failure pressure",
+                            value: percentText(failureRate),
+                            caption: "\(queue.counts.failed.compactCountDisplay) failed / \(completedAndFailed.compactCountDisplay) terminal",
+                            icon: "exclamationmark.triangle",
+                            tint: failureRate > 0.05 ? .red : .green
+                        )
+                        Divider().padding(.leading, 58)
+                        SignalMetricRow(
+                            title: "Work in flight",
+                            value: queue.counts.active.compactCountDisplay,
+                            caption: activeCaption,
+                            icon: "bolt",
+                            tint: queue.counts.active > 0 ? .blue : .secondary
+                        )
+                        Divider().padding(.leading, 58)
+                        SignalMetricRow(
+                            title: "Retry pressure",
+                            value: retryPressureValue,
+                            caption: retryPressureCaption,
+                            icon: "arrow.clockwise",
+                            tint: retryPressureTint
+                        )
+                    }
+                }
+
+                MetricSettingsSection(
+                    title: "State mix",
+                    subtitle: "Distribution across BullMQ states",
+                    icon: "chart.bar.xaxis",
+                    tint: .teal,
+                    trailing: "\(totalKnownJobs.compactCountDisplay) known jobs"
+                ) {
+                    StateMixBar(counts: queue.counts, boxed: false)
+                }
+
+                MetricSettingsSection(
+                    title: "Throughput",
+                    subtitle: "Completed and failed jobs per minute",
                     icon: "chart.line.uptrend.xyaxis",
-                    message: "Refresh this queue to record local metric snapshots."
-                )
-            } else {
-                throughputChart(points)
+                    tint: .green,
+                    trailing: "jobs/min"
+                ) {
+                    if points.count < 2 {
+                        SectionEmptyState(
+                            icon: "chart.line.uptrend.xyaxis",
+                            message: "Refresh this queue a few times to build local throughput samples."
+                        )
+                        .frame(minHeight: 120, alignment: .topLeading)
+                        .padding(14)
+                    } else {
+                        throughputChart(points)
+                            .padding(14)
+                    }
+                }
+
+                MetricSettingsSection(
+                    title: "Snapshot change",
+                    subtitle: "Movement since the previous local sample",
+                    icon: "plus.forwardslash.minus",
+                    tint: .blue,
+                    trailing: deltaDetail(previousCounts)
+                ) {
+                    MetricsDeltaList(current: queue.counts.snapshot, previous: previousCounts, boxed: false)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                MetricOverviewCard {
+                    metricsHeader(sampleCount: snapshots.count)
+                }
+
+                MetricOverviewCard {
+                    LazyVGrid(columns: metricColumns, spacing: 10) {
+                        SignalMetricCard(
+                            title: "Backlog",
+                            value: backlog.compactCountDisplay,
+                            caption: backlogCaption,
+                            icon: "tray.full",
+                            tint: backlog == 0 ? .green : .teal
+                        )
+
+                        SignalMetricCard(
+                            title: "Failure pressure",
+                            value: percentText(failureRate),
+                            caption: "\(queue.counts.failed.compactCountDisplay) failed / \(completedAndFailed.compactCountDisplay) terminal",
+                            icon: "exclamationmark.triangle",
+                            tint: failureRate > 0.05 ? .red : .green
+                        )
+
+                        SignalMetricCard(
+                            title: "Work in flight",
+                            value: queue.counts.active.compactCountDisplay,
+                            caption: activeCaption,
+                            icon: "bolt",
+                            tint: queue.counts.active > 0 ? .blue : .secondary
+                        )
+
+                        SignalMetricCard(
+                            title: "Retry pressure",
+                            value: retryPressureValue,
+                            caption: retryPressureCaption,
+                            icon: "arrow.clockwise",
+                            tint: retryPressureTint
+                        )
+                    }
+                }
+
+                MetricOverviewCard {
+                    MetricsSection(title: "State mix", detail: "\(totalKnownJobs.compactCountDisplay) known jobs") {
+                        StateMixBar(counts: queue.counts)
+                    }
+                }
+
+                MetricOverviewCard {
+                    MetricsSection(title: "Throughput", detail: "jobs/min") {
+                        if points.count < 2 {
+                            SectionEmptyState(
+                                icon: "chart.line.uptrend.xyaxis",
+                                message: "Refresh this queue a few times to build local throughput samples."
+                            )
+                            .frame(minHeight: 92, alignment: .topLeading)
+                        } else {
+                            throughputChart(points)
+                        }
+                    }
+                }
             }
         }
-        .panelStyle(minHeight: 220)
     }
 
-    private func header(points: [ThroughputPoint]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.green.opacity(0.12))
-                    Image(systemName: "gauge.with.dots.needle.67percent")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.green)
-                }
-                .frame(width: 22, height: 22)
+    private var metricColumns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 10),
+            GridItem(.flexible(), spacing: 10)
+        ]
+    }
 
-                Text("Throughput")
+    private var recentSnapshots: [QueueMetricSnapshot] {
+        Array(model.snapshots
+            .filter { $0.queueName == queue.name }
+            .sorted { $0.capturedAt < $1.capturedAt }
+            .suffix(40))
+    }
+
+    private var backlog: Int {
+        queue.counts.waiting + queue.counts.delayed + queue.counts.prioritized + queue.counts.waitingChildren
+    }
+
+    private var backlogCaption: String {
+        let parts = [
+            queue.counts.waiting > 0 ? "\(queue.counts.waiting.compactCountDisplay) queued" : nil,
+            queue.counts.delayed > 0 ? "\(queue.counts.delayed.compactCountDisplay) delayed" : nil,
+            queue.counts.prioritized > 0 ? "\(queue.counts.prioritized.compactCountDisplay) priority" : nil
+        ].compactMap(\.self)
+        return parts.isEmpty ? "No queued work" : parts.joined(separator: " · ")
+    }
+
+    private var activeCaption: String {
+        guard queue.counts.active > 0 else { return "No active jobs right now" }
+        return queue.counts.active == 1 ? "1 job currently processing" : "\(queue.counts.active.compactCountDisplay) jobs currently processing"
+    }
+
+    private var completedAndFailed: Int {
+        queue.counts.completed + queue.counts.failed
+    }
+
+    private var failureRate: Double {
+        guard completedAndFailed > 0 else { return 0 }
+        return Double(queue.counts.failed) / Double(completedAndFailed)
+    }
+
+    private var retryPressureJobs: [JobSummary] {
+        model.jobs.filter { $0.attemptsMade > 0 || ($0.attempts ?? 0) > 1 }
+    }
+
+    private var retryPressureValue: String {
+        guard !model.jobs.isEmpty else { return "—" }
+        return percentText(Double(retryPressureJobs.count) / Double(model.jobs.count))
+    }
+
+    private var retryPressureCaption: String {
+        guard !model.jobs.isEmpty else { return "Open Runs to sample retry activity" }
+        let retrying = retryPressureJobs.count
+        return retrying == 1 ? "1 visible run has retries" : "\(retrying.compactCountDisplay) visible runs have retries"
+    }
+
+    private var retryPressureTint: Color {
+        guard !model.jobs.isEmpty else { return .secondary }
+        return retryPressureJobs.isEmpty ? .green : .orange
+    }
+
+    private var totalKnownJobs: Int {
+        queue.counts.waiting
+            + queue.counts.active
+            + queue.counts.delayed
+            + queue.counts.prioritized
+            + queue.counts.completed
+            + queue.counts.failed
+            + queue.counts.paused
+            + queue.counts.waitingChildren
+    }
+
+    private func metricsHeader(sampleCount: Int) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.green.opacity(0.12))
+                Image(systemName: "gauge.with.dots.needle.67percent")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
+            .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Metrics")
                     .font(.subheadline.weight(.semibold))
-
-                Spacer()
-
-                Text("jobs/min")
-                    .font(.caption.monospaced().weight(.medium))
-                    .tracking(1.8)
+                Text("Live pressure, throughput, and trend signals")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 8) {
-                ThroughputLegend(color: .green, title: "Completed")
-                ThroughputLegend(color: .red, title: "Failed")
-                Spacer()
-                Text("\(points.count.formatted()) samples")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+            Spacer()
+
+            Text(sampleCount == 1 ? "1 sample" : "\(sampleCount.formatted()) samples")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -403,7 +603,7 @@ private struct MetricsPanel: View {
             .interpolationMethod(.catmullRom)
             .foregroundStyle(
                 LinearGradient(
-                    colors: [.green.opacity(0.22), .green.opacity(0.015)],
+                    colors: [.green.opacity(0.20), .green.opacity(0.012)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -414,7 +614,7 @@ private struct MetricsPanel: View {
                 y: .value("Completed", point.completedPerMinute)
             )
             .interpolationMethod(.catmullRom)
-            .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+            .lineStyle(StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
             .foregroundStyle(.green)
 
             LineMark(
@@ -422,21 +622,8 @@ private struct MetricsPanel: View {
                 y: .value("Failed", point.failedPerMinute)
             )
             .interpolationMethod(.catmullRom)
-            .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            .lineStyle(StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
             .foregroundStyle(.red)
-
-            if points.count < 3 {
-                PointMark(
-                    x: .value("Time", point.date),
-                    y: .value("Completed", point.completedPerMinute)
-                )
-                .foregroundStyle(.green)
-                PointMark(
-                    x: .value("Time", point.date),
-                    y: .value("Failed", point.failedPerMinute)
-                )
-                .foregroundStyle(.red)
-            }
         }
         .chartYScale(domain: 0...throughputUpperBound(points))
         .chartXAxis(.hidden)
@@ -449,8 +636,7 @@ private struct MetricsPanel: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(height: 150)
-        .padding(.top, 2)
+        .frame(height: style == .detailed ? 210 : 130)
     }
 
     private func throughputPoints(_ snapshots: [QueueMetricSnapshot]) -> [ThroughputPoint] {
@@ -487,6 +673,23 @@ private struct MetricsPanel: View {
             .max() ?? 0
         return max(maxValue * 1.15, 1)
     }
+
+    private func percentText(_ value: Double) -> String {
+        let percent = value * 100
+        if percent >= 10 || percent.rounded(.down) == percent {
+            return "\(Int(percent.rounded()))%"
+        }
+        return String(format: "%.1f%%", percent)
+    }
+
+    private func deltaDetail(_ previous: QueueCountsSnapshot?) -> String {
+        previous == nil ? "needs 2 samples" : "since last snapshot"
+    }
+}
+
+private enum MetricsPanelStyle {
+    case compact
+    case detailed
 }
 
 private struct ThroughputPoint: Identifiable {
@@ -496,20 +699,332 @@ private struct ThroughputPoint: Identifiable {
     let failedPerMinute: Double
 }
 
-private struct ThroughputLegend: View {
-    let color: Color
+private struct SignalMetricCard: View {
     let title: String
+    let value: String
+    let caption: String
+    let icon: String
+    let tint: Color
 
     var body: some View {
-        HStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text(title)
-                .font(.caption.monospaced().weight(.medium))
-                .tracking(-0.2)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(tint.opacity(0.12))
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.title3.monospacedDigit().weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
         }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+private struct SignalMetricRow: View {
+    let title: String
+    let value: String
+    let caption: String
+    let icon: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(tint.opacity(0.12))
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 36, height: 36)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 16)
+
+            Text(value)
+                .font(.callout.monospacedDigit().weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+    }
+}
+
+private struct MetricOverviewCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(14)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(0.055))
+            }
+    }
+}
+
+private struct MetricSettingsSection<Content: View>: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let tint: Color
+    let trailing: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(tint.opacity(0.12))
+                    Image(systemName: icon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 38, height: 38)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline.weight(.semibold))
+                    Text(subtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 12)
+
+                Text(trailing)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            content
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.94), in: RoundedRectangle(cornerRadius: 11))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11)
+                        .strokeBorder(Color.primary.opacity(0.08))
+                }
+        }
+        .padding(.bottom, 2)
+    }
+}
+
+private struct MetricsSection<Content: View>: View {
+    let title: String
+    let detail: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(detail)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            content
+        }
+    }
+}
+
+private struct StateMixBar: View {
+    let counts: QueueCounts
+    var boxed = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { geometry in
+                HStack(spacing: 2) {
+                    ForEach(nonEmptySegments) { segment in
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(segment.color.opacity(0.82))
+                            .frame(width: segmentWidth(segment, in: geometry.size.width))
+                    }
+                }
+            }
+            .frame(height: 18)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(nonEmptySegments) { segment in
+                        StateMixLegend(segment: segment)
+                    }
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], alignment: .leading, spacing: 6) {
+                    ForEach(nonEmptySegments) { segment in
+                        StateMixLegend(segment: segment)
+                    }
+                }
+            }
+        }
+        .padding(boxed ? 10 : 14)
+        .background {
+            if boxed {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            }
+        }
+    }
+
+    private var segments: [StateMixSegment] {
+        BullMQState.allCases.map {
+            StateMixSegment(state: $0, value: counts.count(for: $0), color: color(for: $0))
+        }
+    }
+
+    private var nonEmptySegments: [StateMixSegment] {
+        let nonEmpty = segments.filter { $0.value > 0 }
+        return nonEmpty.isEmpty ? [StateMixSegment(state: .waiting, value: 1, color: .secondary)] : nonEmpty
+    }
+
+    private var total: Int {
+        max(nonEmptySegments.reduce(0) { $0 + $1.value }, 1)
+    }
+
+    private func segmentWidth(_ segment: StateMixSegment, in width: CGFloat) -> CGFloat {
+        max(6, width * CGFloat(segment.value) / CGFloat(total))
+    }
+
+    private func color(for state: BullMQState) -> Color {
+        switch state {
+        case .failed: .red
+        case .active: .blue
+        case .completed: .green
+        case .delayed, .waitingChildren: .orange
+        case .prioritized: .purple
+        case .paused: .gray
+        case .waiting: .teal
+        }
+    }
+}
+
+private struct StateMixSegment: Identifiable {
+    var id: BullMQState { state }
+    let state: BullMQState
+    let value: Int
+    let color: Color
+}
+
+private struct StateMixLegend: View {
+    let segment: StateMixSegment
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(segment.color)
+                .frame(width: 6, height: 6)
+            Text(segment.state.displayName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(segment.value.compactCountDisplay)
+                .font(.caption2.monospacedDigit().weight(.semibold))
+        }
+        .lineLimit(1)
+    }
+}
+
+private struct MetricsDeltaList: View {
+    let current: QueueCountsSnapshot
+    let previous: QueueCountsSnapshot?
+    var boxed = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MetricsDeltaRow(title: "Completed", value: current.completed, previous: previous?.completed, tint: .green)
+            Divider().padding(.leading, 12)
+            MetricsDeltaRow(title: "Failed", value: current.failed, previous: previous?.failed, tint: .red)
+            Divider().padding(.leading, 12)
+            MetricsDeltaRow(title: "Backlog", value: current.backlog, previous: previous?.backlog, tint: .teal)
+        }
+        .background {
+            if boxed {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            }
+        }
+    }
+}
+
+private struct MetricsDeltaRow: View {
+    let title: String
+    let value: Int
+    let previous: Int?
+    let tint: Color
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value.compactCountDisplay)
+                .font(.callout.monospacedDigit().weight(.semibold))
+            Text(deltaText)
+                .font(.caption.monospacedDigit().weight(.medium))
+                .foregroundStyle(deltaColor)
+                .frame(width: 58, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    private var deltaText: String {
+        guard let previous else { return "—" }
+        let delta = value - previous
+        if delta == 0 { return "±0" }
+        return delta > 0 ? "+\(delta.compactCountDisplay)" : delta.compactCountDisplay
+    }
+
+    private var deltaColor: Color {
+        guard let previous else { return .secondary }
+        if value == previous { return .secondary }
+        return value > previous ? tint : .secondary
+    }
+}
+
+private extension QueueCounts {
+    var snapshot: QueueCountsSnapshot {
+        QueueCountsSnapshot(counts: self)
+    }
+}
+
+private extension QueueCountsSnapshot {
+    var backlog: Int {
+        waiting + delayed + prioritized + waitingChildren
     }
 }
 
@@ -871,8 +1386,7 @@ private struct FailedTriagePanel: View {
                         FailureTriageRow(
                             reason: group.reason,
                             count: group.count,
-                            rank: index,
-                            total: max(failures.first?.count ?? 1, 1)
+                            rank: index
                         )
                     }
                 }
@@ -958,7 +1472,6 @@ private struct FailureTriageRow: View {
     let reason: String
     let count: Int
     let rank: Int
-    let total: Int
 
     var body: some View {
         HStack(spacing: 12) {
@@ -966,17 +1479,6 @@ private struct FailureTriageRow: View {
                 Text(reason)
                     .font(.callout.monospaced().weight(.medium))
                     .lineLimit(1)
-
-                GeometryReader { proxy in
-                    Capsule()
-                        .fill(color.opacity(0.16))
-                        .overlay(alignment: .leading) {
-                            Capsule()
-                                .fill(color.opacity(0.72))
-                                .frame(width: proxy.size.width * share)
-                        }
-                }
-                .frame(height: 4)
             }
 
             Text(count.formatted())
@@ -991,10 +1493,6 @@ private struct FailureTriageRow: View {
             RoundedRectangle(cornerRadius: 7)
                 .strokeBorder(color.opacity(rank == 0 ? 0.22 : 0.10))
         }
-    }
-
-    private var share: Double {
-        min(1, Double(count) / Double(max(total, 1)))
     }
 
     private var color: Color {

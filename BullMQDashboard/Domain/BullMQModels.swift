@@ -63,15 +63,38 @@ struct RedisConnectionConfig: Equatable, Sendable {
     var prefix: String
 }
 
-struct QueueSummary: Identifiable, Equatable, Sendable {
+struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
     var id: String { name }
     var name: String
+    var displayName: String?
     var prefix: String
     var counts: QueueCounts
     var health: QueueHealth
+
+    var resolvedDisplayName: String {
+        let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? name.titleCasedQueueName : trimmed
+    }
+
+    init(name: String, displayName: String? = nil, prefix: String, counts: QueueCounts, health: QueueHealth) {
+        self.name = name
+        self.displayName = displayName
+        self.prefix = prefix
+        self.counts = counts
+        self.health = health
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        prefix = try container.decode(String.self, forKey: .prefix)
+        counts = try container.decode(QueueCounts.self, forKey: .counts)
+        health = try container.decode(QueueHealth.self, forKey: .health)
+    }
 }
 
-struct QueueCounts: Equatable, Sendable {
+struct QueueCounts: Codable, Equatable, Sendable {
     var waiting: Int
     var active: Int
     var delayed: Int
@@ -106,7 +129,7 @@ struct QueueCounts: Equatable, Sendable {
     }
 }
 
-enum QueueHealth: String, Sendable {
+enum QueueHealth: String, Codable, Sendable {
     case healthy
     case busy
     case warning

@@ -18,7 +18,8 @@ struct JobInspectorView: View {
                             TextBlockSection(title: "Failed reason", text: failedReason)
                         }
                         if !detail.stacktrace.isEmpty {
-                            TextBlockSection(title: "Stack trace", text: detail.stacktrace.joined(separator: "\n\n"))
+                            StackTraceSection(stacktrace: detail.stacktrace)
+                                .id(detail.id)
                         }
                     }
                     .padding(18)
@@ -84,6 +85,54 @@ struct JobInspectorView: View {
     private func format(_ date: Date?) -> String {
         guard let date else { return "—" }
         return date.formatted(date: .abbreviated, time: .standard)
+    }
+}
+
+private struct StackTraceSection: View {
+    let stacktrace: [String]
+    @State private var visibleCount = 5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Stack trace")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if stacktrace.count > visibleCount {
+                    Text("\(visibleCount) of \(stacktrace.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView(.horizontal) {
+                Text(visibleStacktrace.joined(separator: "\n\n"))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(10)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            }
+
+            if stacktrace.count > visibleCount {
+                Button {
+                    visibleCount = min(visibleCount + 5, stacktrace.count)
+                } label: {
+                    Text("Load more")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private var visibleStacktrace: [String] {
+        Array(stacktrace.prefix(visibleCount))
     }
 }
 

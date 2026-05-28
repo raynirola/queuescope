@@ -43,3 +43,28 @@ final class QueueNameStore {
         return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
     }
 }
+
+final class QueueMetadataStore {
+    private let key = "redis.connection.queue.metadata"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load(scope: String) -> [QueueSummary] {
+        storedQueues()[scope] ?? []
+    }
+
+    func save(_ queues: [QueueSummary], scope: String) {
+        var stored = storedQueues()
+        stored[scope] = queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    private func storedQueues() -> [String: [QueueSummary]] {
+        guard let data = defaults.data(forKey: key) else { return [:] }
+        return (try? JSONDecoder().decode([String: [QueueSummary]].self, from: data)) ?? [:]
+    }
+}

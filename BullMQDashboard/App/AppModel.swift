@@ -2,7 +2,6 @@ import Foundation
 
 enum LoadingPhase: String, Hashable {
     case connecting
-    case discovery
     case overview
     case runs
     case workers
@@ -23,6 +22,8 @@ final class AppModel: ObservableObject {
     @Published var queues: [QueueSummary] = []
     @Published var selectedState: BullMQState?
     @Published var jobs: [JobSummary] = []
+    @Published var runPage = 0
+    @Published var runTotal = 0
     @Published var selectedJob: JobSummary?
     @Published var selectedJobDetail: JobDetail?
     @Published var workers: [WorkerSummary] = []
@@ -42,28 +43,52 @@ final class AppModel: ObservableObject {
     private let credentialStore: KeychainCredentialStore
     private let snapshotStore: MetricSnapshotStore
     private let queueNameStore: QueueNameStore
+    private let queueMetadataStore: QueueMetadataStore
     private var config: RedisConnectionConfig?
-    private let pageSize = 50
+    private let runPageSize = 10
     private var refreshRequestID = 0
-    private var jobsByQueue: [String: [JobSummary]] = [:]
+    private var jobsByQuery: [String: [JobSummary]] = [:]
+    private var runTotalsByQuery: [String: Int] = [:]
     private var workersByQueue: [String: [WorkerSummary]] = [:]
     private var schedulersByQueue: [String: [SchedulerSummary]] = [:]
     private var loadingPhaseCounts: [LoadingPhase: Int] = [:]
+    private var refreshTask: Task<Void, Never>?
+    private var lastSnapshotCountsByQueue: [String: QueueCounts] = [:]
 
     init(
         engine: BullMQEngine = BullMQRedisEngine(),
         profileStore: ConnectionProfileStore = ConnectionProfileStore(),
         credentialStore: KeychainCredentialStore = KeychainCredentialStore(),
         snapshotStore: MetricSnapshotStore = MetricSnapshotStore(),
-        queueNameStore: QueueNameStore = QueueNameStore()
+        queueNameStore: QueueNameStore = QueueNameStore(),
+        queueMetadataStore: QueueMetadataStore = QueueMetadataStore()
     ) {
         self.engine = engine
         self.profileStore = profileStore
         self.credentialStore = credentialStore
         self.snapshotStore = snapshotStore
         self.queueNameStore = queueNameStore
+        self.queueMetadataStore = queueMetadataStore
         self.profiles = profileStore.load()
         self.snapshots = snapshotStore.load()
+    }
+
+    var canGoToPreviousRunPage: Bool {
+        runPage > 0
+    }
+
+    var canGoToNextRunPage: Bool {
+        (runPage + 1) * runPageSize < runTotal
+    }
+
+    var runPageRangeText: String {
+        guard runTotal > 0 else { return "0 loaded" }
+        let start = runPage * runPageSize + 1
+        let end = min((runPage + 1) * runPageSize, runTotal)
+        if runTotal > end, selectedState == nil {
+            return "\(start)-\(end) of many"
+        }
+        return "\(start)-\(end) of \(runTotal)"
     }
 
     func connect() async {
@@ -77,37 +102,35 @@ final class AppModel: ObservableObject {
             statusMessage = "Connected to \(parsed.host):\(parsed.port)"
             loadSavedQueues(for: parsed)
             if selectedQueue != nil {
-                Task { await refreshSelectedQueue(for: selectedView) }
+                scheduleRefresh(for: selectedView)
+            } else {
+                statusMessage = "Connected. Add a BullMQ queue by name."
             }
-            Task { await refreshQueuesAfterConnect(prefix: parsed.prefix) }
-        }
-    }
-
-    func refreshQueuesAfterConnect(prefix: String? = nil) async {
-        await runLoading(.discovery) {
-            if let prefix {
-                statusMessage = "Checking \(prefix):*:meta for BullMQ queues…"
-            }
-            try await loadQueues()
         }
     }
 
     func disconnect() async {
         refreshRequestID += 1
+        refreshTask?.cancel()
+        refreshTask = nil
         await engine.disconnect()
         isConnected = false
         statusMessage = "Not connected"
         queues = []
         jobs = []
+        runPage = 0
+        runTotal = 0
         selectedState = nil
         selectedQueue = nil
         selectedJob = nil
         selectedJobDetail = nil
         activeLoadingPhases = []
-        jobsByQueue = [:]
+        jobsByQuery = [:]
+        runTotalsByQuery = [:]
         workersByQueue = [:]
         schedulersByQueue = [:]
         loadingPhaseCounts = [:]
+        lastSnapshotCountsByQueue = [:]
     }
 
     func saveCurrentProfile() {
@@ -150,48 +173,37 @@ final class AppModel: ObservableObject {
         profileStore.save(profiles)
     }
 
-    func loadQueues() async throws {
-        statusMessage = "Checking \(prefix):*:meta for BullMQ queue metadata…"
-        let queueSummaries = try await engine.discoverQueues(prefix: prefix)
-        mergeQueues(queueSummaries)
-        persistCurrentQueueNames()
-        if queueSummaries.isEmpty, !queues.isEmpty {
-            statusMessage = "Using saved queues. Discovery found no new \(prefix):*:meta keys."
-        } else {
-            statusMessage = queueSummaries.isEmpty ? "Discovery found no \(prefix):*:meta keys. Add a queue manually if you know its name." : "Found \(queueSummaries.count) queues"
-        }
-        if selectedQueue == nil || !queues.contains(where: { $0.name == selectedQueue?.name }) {
-            selectedQueue = queues.first
-            selectedState = nil
-        }
-        if selectedQueue != nil {
-            Task { await refreshSelectedQueue(for: selectedView) }
-        }
-    }
-
     func selectQueue(_ queue: QueueSummary) {
         selectedQueue = queue
         selectedState = nil
         selectedJob = nil
         selectedJobDetail = nil
+        runPage = 0
         applyCachedPanelData(for: queue.name)
-        Task { await refreshSelectedQueue(for: selectedView) }
+        scheduleRefresh(for: selectedView)
     }
 
     func selectWorkspaceView(_ view: QueueWorkspaceView) {
         selectedView = view
         selectedJob = nil
         selectedJobDetail = nil
-        Task { await refreshSelectedQueue(for: view) }
+        if view == .runs, let selectedQueue {
+            applyCachedRuns(for: selectedQueue.name)
+        } else if let selectedQueue {
+            applyCachedPanelData(for: selectedQueue.name)
+        }
+        scheduleRefresh(for: view)
     }
 
-    func addManualQueue(named rawName: String) async {
+    func addManualQueue(named rawName: String, displayName rawDisplayName: String? = nil) async {
         let name = normalizedManualQueueName(rawName)
         guard !name.isEmpty else { return }
+        let displayName = normalizedManualQueueDisplayName(rawDisplayName)
 
         await runLoading(.overview) {
             statusMessage = "Loading queue \(name)…"
-            let overview = try await engine.getQueueOverview(queueName: name, prefix: prefix)
+            var overview = try await engine.getQueueOverview(queueName: name, prefix: prefix)
+            overview.displayName = displayName
             if let index = queues.firstIndex(where: { $0.name == name }) {
                 queues[index] = overview
             } else {
@@ -202,9 +214,11 @@ final class AppModel: ObservableObject {
             selectedState = nil
             selectedJob = nil
             selectedJobDetail = nil
+            runPage = 0
             persistCurrentQueueNames()
+            persistCurrentQueueMetadata()
             applyCachedPanelData(for: name)
-            Task { await refreshSelectedQueue(for: selectedView) }
+            scheduleRefresh(for: selectedView)
         }
     }
 
@@ -224,7 +238,33 @@ final class AppModel: ObservableObject {
         selectedView = .runs
         selectedJob = nil
         selectedJobDetail = nil
-        Task { await refreshSelectedQueue(for: .runs) }
+        runPage = 0
+        if let selectedQueue {
+            applyCachedRuns(for: selectedQueue.name)
+        }
+        scheduleRefresh(for: .runs)
+    }
+
+    func goToPreviousRunPage() {
+        guard canGoToPreviousRunPage else { return }
+        runPage -= 1
+        selectedJob = nil
+        selectedJobDetail = nil
+        if let selectedQueue {
+            applyCachedRuns(for: selectedQueue.name)
+        }
+        scheduleRefresh(for: .runs)
+    }
+
+    func goToNextRunPage() {
+        guard canGoToNextRunPage else { return }
+        runPage += 1
+        selectedJob = nil
+        selectedJobDetail = nil
+        if let selectedQueue {
+            applyCachedRuns(for: selectedQueue.name)
+        }
+        scheduleRefresh(for: .runs)
     }
 
     func selectJob(_ job: JobSummary) {
@@ -242,24 +282,33 @@ final class AppModel: ObservableObject {
         let queueName = selectedQueue.name
         statusMessage = "Loading \(queueName) overview…"
         let overview = try await engine.getQueueOverview(queueName: queueName, prefix: prefix)
+        try Task.checkCancellation()
         guard isCurrentRefresh(requestID, queueName: queueName) else { return }
-        replaceQueue(overview)
-        self.selectedQueue = overview
+        var updatedOverview = overview
+        updatedOverview.displayName = overview.displayName ?? selectedQueue.displayName
+        replaceQueue(updatedOverview)
+        persistCurrentQueueMetadata()
+        self.selectedQueue = updatedOverview
 
         switch view {
         case .overview:
-            recordSnapshot(queueName: queueName, counts: overview.counts)
+            recordSnapshot(queueName: queueName, counts: updatedOverview.counts)
             statusMessage = "Refreshed \(queueName)"
         case .runs:
             statusMessage = "Loading \(queueName) runs…"
-            let loadedJobs = try await loadJobs(queueName: queueName)
+            let loadedPage = try await loadJobs(queueName: queueName)
+            try Task.checkCancellation()
             guard isCurrentRefresh(requestID, queueName: queueName) else { return }
-            jobsByQueue[cacheKey(queueName)] = loadedJobs
-            jobs = loadedJobs
-            statusMessage = "Loaded \(loadedJobs.count) runs for \(queueName)"
+            let queryKey = runCacheKey(queueName)
+            jobsByQuery[queryKey] = loadedPage.jobs
+            runTotalsByQuery[queryKey] = loadedPage.total
+            jobs = loadedPage.jobs
+            runTotal = loadedPage.total
+            statusMessage = "Loaded \(loadedPage.jobs.count) runs for \(queueName)"
         case .workers:
             statusMessage = "Loading \(queueName) workers…"
             let loadedWorkers = try await engine.getWorkers(queueName: queueName, prefix: prefix)
+            try Task.checkCancellation()
             guard isCurrentRefresh(requestID, queueName: queueName) else { return }
             workersByQueue[cacheKey(queueName)] = loadedWorkers
             workers = loadedWorkers
@@ -267,12 +316,13 @@ final class AppModel: ObservableObject {
         case .schedulers:
             statusMessage = "Loading \(queueName) schedulers…"
             let loadedSchedulers = try await engine.getSchedulers(queueName: queueName, prefix: prefix)
+            try Task.checkCancellation()
             guard isCurrentRefresh(requestID, queueName: queueName) else { return }
             schedulersByQueue[cacheKey(queueName)] = loadedSchedulers
             schedulers = loadedSchedulers
             statusMessage = "Loaded \(loadedSchedulers.count) schedulers for \(queueName)"
         case .metrics:
-            recordSnapshot(queueName: queueName, counts: overview.counts)
+            recordSnapshot(queueName: queueName, counts: updatedOverview.counts)
             statusMessage = "Recorded \(queueName) metrics snapshot"
         case .flowGraph:
             statusMessage = "Refreshed \(queueName)"
@@ -289,34 +339,43 @@ final class AppModel: ObservableObject {
                 jobID: selectedJob.id,
                 state: selectedJob.state
             )
+            try Task.checkCancellation()
             guard self.selectedJob?.id == jobID else { return }
             selectedJobDetail = detail
         }
     }
 
-    private func loadJobs(queueName: String) async throws -> [JobSummary] {
+    private func loadJobs(queueName: String) async throws -> JobPage {
         if let selectedState {
             let page = try await engine.getJobs(
                 queueName: queueName,
                 prefix: prefix,
                 state: selectedState,
-                page: 0,
-                pageSize: pageSize
+                page: runPage,
+                pageSize: runPageSize
             )
-            return page.jobs
+            return page
         }
 
-        return try await engine.getRecentJobs(
+        let fetchLimit = (runPage + 1) * runPageSize + 1
+        let jobs = try await engine.getRecentJobs(
             queueName: queueName,
             prefix: prefix,
             states: BullMQState.allCases,
-            perStateLimit: 10,
-            totalLimit: pageSize
+            perStateLimit: fetchLimit,
+            totalLimit: fetchLimit
         )
+        let pageStart = runPage * runPageSize
+        let pageEnd = min(pageStart + runPageSize, jobs.count)
+        let pageJobs = pageStart < jobs.count ? Array(jobs[pageStart..<pageEnd]) : []
+        let total = jobs.count > pageEnd ? pageEnd + 1 : jobs.count
+        return JobPage(jobs: pageJobs, total: total, page: runPage, pageSize: runPageSize)
     }
 
     private func replaceQueue(_ queue: QueueSummary) {
+        var queue = queue
         if let index = queues.firstIndex(where: { $0.name == queue.name }) {
+            queue.displayName = queue.displayName ?? queues[index].displayName
             queues[index] = queue
         } else {
             queues.append(queue)
@@ -324,17 +383,17 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func mergeQueues(_ summaries: [QueueSummary]) {
-        for summary in summaries {
-            replaceQueue(summary)
-        }
-    }
-
     private func loadSavedQueues(for config: RedisConnectionConfig) {
-        let names = queueNameStore.load(scope: queueScope(for: config))
-        guard !names.isEmpty else { return }
-        queues = names.map {
-            QueueSummary(name: $0, prefix: config.prefix, counts: .empty, health: .unknown)
+        let scope = queueScope(for: config)
+        let cachedQueues = queueMetadataStore.load(scope: scope)
+        let names = queueNameStore.load(scope: scope)
+        guard !cachedQueues.isEmpty || !names.isEmpty else { return }
+        if cachedQueues.isEmpty {
+            queues = names.map {
+                QueueSummary(name: $0, prefix: config.prefix, counts: .empty, health: .unknown)
+            }
+        } else {
+            queues = cachedQueues
         }
         if selectedQueue == nil {
             selectedQueue = queues.first
@@ -343,20 +402,23 @@ final class AppModel: ObservableObject {
         if let selectedQueue {
             applyCachedPanelData(for: selectedQueue.name)
         }
-        statusMessage = "Loaded \(names.count) saved queues"
+        statusMessage = "Loaded \(queues.count) cached queues"
     }
 
     private func resetQueueStateForNewConnection() {
         refreshRequestID += 1
         queues = []
         jobs = []
+        runPage = 0
+        runTotal = 0
         workers = []
         schedulers = []
         selectedQueue = nil
         selectedState = nil
         selectedJob = nil
         selectedJobDetail = nil
-        jobsByQueue = [:]
+        jobsByQuery = [:]
+        runTotalsByQuery = [:]
         workersByQueue = [:]
         schedulersByQueue = [:]
     }
@@ -364,6 +426,11 @@ final class AppModel: ObservableObject {
     private func persistCurrentQueueNames() {
         guard let config else { return }
         queueNameStore.save(queues.map(\.name), scope: queueScope(for: config))
+    }
+
+    private func persistCurrentQueueMetadata() {
+        guard let config else { return }
+        queueMetadataStore.save(queues, scope: queueScope(for: config))
     }
 
     private func queueScope(for config: RedisConnectionConfig) -> String {
@@ -374,14 +441,27 @@ final class AppModel: ObservableObject {
         "\(prefix):\(queueName)"
     }
 
+    private func runCacheKey(_ queueName: String) -> String {
+        let stateKey = selectedState?.rawValue ?? "all"
+        return "\(cacheKey(queueName)):runs:\(stateKey):\(runPage)"
+    }
+
     private func applyCachedPanelData(for queueName: String) {
         let key = cacheKey(queueName)
-        jobs = jobsByQueue[key] ?? []
+        applyCachedRuns(for: queueName)
         workers = workersByQueue[key] ?? []
         schedulers = schedulersByQueue[key] ?? []
     }
 
+    private func applyCachedRuns(for queueName: String) {
+        let key = runCacheKey(queueName)
+        jobs = jobsByQuery[key] ?? []
+        runTotal = runTotalsByQuery[key] ?? 0
+    }
+
     private func recordSnapshot(queueName: String, counts: QueueCounts) {
+        guard lastSnapshotCountsByQueue[queueName] != counts else { return }
+        lastSnapshotCountsByQueue[queueName] = counts
         let snapshot = QueueMetricSnapshot(
             queueName: queueName,
             capturedAt: Date(),
@@ -389,6 +469,13 @@ final class AppModel: ObservableObject {
         )
         snapshotStore.append(snapshot)
         snapshots = snapshotStore.load()
+    }
+
+    private func scheduleRefresh(for view: QueueWorkspaceView) {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            await self?.refreshSelectedQueue(for: view)
+        }
     }
 
     private func loadingPhase(for view: QueueWorkspaceView) -> LoadingPhase {
@@ -423,12 +510,19 @@ final class AppModel: ObservableObject {
         return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func normalizedManualQueueDisplayName(_ rawName: String?) -> String? {
+        let name = rawName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
     private func runLoading(_ phase: LoadingPhase, _ operation: () async throws -> Void) async {
         beginLoading(phase)
         lastError = nil
         defer { endLoading(phase) }
         do {
             try await operation()
+        } catch is CancellationError {
+            return
         } catch {
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
