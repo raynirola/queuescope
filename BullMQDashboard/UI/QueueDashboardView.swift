@@ -1160,7 +1160,7 @@ private struct WorkerRow: View {
                     Text("·")
                         .foregroundStyle(.tertiary)
 
-                    Text("heartbeat \(heartbeatText)")
+                    Text(workerSignalText)
                         .lineLimit(1)
                 }
                 .font(.caption)
@@ -1240,6 +1240,10 @@ private struct WorkerRow: View {
         }
         return date.formatted(date: .abbreviated, time: .omitted)
     }
+
+    private var workerSignalText: String {
+        worker.raw["source"] == "active-list" ? "inferred from active jobs" : "heartbeat \(heartbeatText)"
+    }
 }
 
 private struct WorkerDetailSection: View {
@@ -1266,7 +1270,7 @@ private struct WorkerDetailSection: View {
                 Divider().padding(.leading, 56)
                 WorkerDetailRow(icon: "play.rectangle", tint: .blue, label: "Active job", value: activeJobText)
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "waveform.path.ecg", tint: .green, label: "Heartbeat", value: heartbeatText)
+                WorkerDetailRow(icon: "waveform.path.ecg", tint: .green, label: workerSignalLabel, value: workerSignalText)
                 Divider().padding(.leading, 56)
                 WorkerDetailRow(icon: "slider.horizontal.3", tint: .blue, label: "Concurrency", value: worker.raw["concurrency"] ?? "—")
                 Divider().padding(.leading, 56)
@@ -1331,6 +1335,14 @@ private struct WorkerDetailSection: View {
             return "\(seconds / 3_600)h ago"
         }
         return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private var workerSignalLabel: String {
+        worker.raw["source"] == "active-list" ? "Signal" : "Heartbeat"
+    }
+
+    private var workerSignalText: String {
+        worker.raw["source"] == "active-list" ? "Inferred from active jobs" : heartbeatText
     }
 }
 

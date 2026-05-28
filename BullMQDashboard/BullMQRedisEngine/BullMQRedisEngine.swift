@@ -144,6 +144,10 @@ actor BullMQRedisEngine: BullMQEngine {
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {
         let keys = try await scan(match: "\(prefix):\(queueName):*worker*", limit: 250, maxPages: scanPageLimit)
         let sortedKeys = keys.sorted()
+        if sortedKeys.isEmpty {
+            return try await inferredWorkersFromActiveJobs(queueName: queueName, prefix: prefix)
+        }
+
         let responses = try await commands(sortedKeys.map { ["HGETALL", $0] })
         var workers: [WorkerSummary] = []
         for (index, key) in sortedKeys.enumerated() {
@@ -159,6 +163,36 @@ actor BullMQRedisEngine: BullMQEngine {
             )
         }
         return workers
+    }
+
+    private func inferredWorkersFromActiveJobs(queueName: String, prefix: String) async throws -> [WorkerSummary] {
+        let overview = try await getQueueOverview(queueName: queueName, prefix: prefix)
+        guard overview.counts.active > 0 else { return [] }
+
+        let activeJobs = try await getJobs(queueName: queueName, prefix: prefix, state: .active, page: 0, pageSize: 8).jobs
+        let activeJobSummary: String
+        if let firstJob = activeJobs.first {
+            let remainingCount = max(0, overview.counts.active - 1)
+            activeJobSummary = remainingCount == 0 ? firstJob.name : "\(firstJob.name) + \(remainingCount) more"
+        } else {
+            activeJobSummary = "\(overview.counts.active.formatted()) active jobs"
+        }
+
+        return [
+            WorkerSummary(
+                id: "\(prefix):\(queueName):active-processing",
+                queueName: queueName,
+                name: "Active processing",
+                raw: [
+                    "status": "processing",
+                    "activeJobName": activeJobSummary,
+                    "concurrency": String(overview.counts.active),
+                    "processed": String(overview.counts.completed),
+                    "failed": String(overview.counts.failed),
+                    "source": "active-list"
+                ]
+            )
+        ]
     }
 
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary] {
