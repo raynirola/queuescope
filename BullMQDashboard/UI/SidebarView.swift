@@ -6,6 +6,8 @@ struct SidebarView: View {
     @State private var isManualQueuePopoverVisible = false
     @State private var manualQueueName = ""
     @State private var manualQueueDisplayName = ""
+    @State private var queueBeingGrouped: QueueSummary?
+    @State private var queueGroupName = ""
     let showConnectionManager: () -> Void
 
     var body: some View {
@@ -33,17 +35,30 @@ struct SidebarView: View {
                     if filteredQueues.isEmpty {
                         queueListEmptyState
                     } else {
-                        ForEach(filteredQueues) { queue in
-                            QueueSidebarRow(
-                                queue: queue,
-                                isSelected: model.selectedQueue?.name == queue.name
-                            )
-                                .contentShape(RoundedRectangle(cornerRadius: 10))
-                                .onTapGesture {
-                                    model.selectQueue(queue)
+                        ForEach(groupedQueues) { group in
+                            VStack(alignment: .leading, spacing: 4) {
+                                QueueGroupHeader(group: group)
+                                    .padding(.horizontal, 18)
+                                    .padding(.top, 8)
+                                    .padding(.bottom, 2)
+
+                                ForEach(group.queues) { queue in
+                                    QueueSidebarRow(
+                                        queue: queue,
+                                        isSelected: model.selectedQueue?.name == queue.name,
+                                        editGroup: {
+                                            queueBeingGrouped = queue
+                                            queueGroupName = queue.groupName ?? ""
+                                        }
+                                    )
+                                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                                    .onTapGesture {
+                                        model.selectQueue(queue)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 3)
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 3)
+                            }
                         }
                     }
                 }
@@ -54,6 +69,23 @@ struct SidebarView: View {
             QueueSearchBar(text: $queueSearch)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
+        }
+        .popover(item: $queueBeingGrouped, arrowEdge: .trailing) { queue in
+            QueueGroupPopover(
+                queue: queue,
+                groupName: $queueGroupName,
+                existingGroups: existingGroupNames,
+                save: { groupName in
+                    model.assignQueue(queue, toGroup: groupName)
+                    queueBeingGrouped = nil
+                    queueGroupName = ""
+                },
+                clear: {
+                    model.assignQueue(queue, toGroup: nil)
+                    queueBeingGrouped = nil
+                    queueGroupName = ""
+                }
+            )
         }
     }
 
@@ -136,6 +168,27 @@ struct SidebarView: View {
             queue.name.localizedCaseInsensitiveContains(query) ||
                 queue.resolvedDisplayName.localizedCaseInsensitiveContains(query)
         }
+    }
+
+    private var groupedQueues: [QueueSidebarGroup] {
+        Dictionary(grouping: filteredQueues, by: \.resolvedGroupName)
+            .map { groupName, queues in
+                QueueSidebarGroup(
+                    name: groupName,
+                    queues: queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.name == "Ungrouped" { return false }
+                if rhs.name == "Ungrouped" { return true }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private var existingGroupNames: [String] {
+        Array(Set(model.queues.map(\.resolvedGroupName)))
+            .filter { $0 != "Ungrouped" }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     private var queueListEmptyState: some View {
@@ -651,9 +704,36 @@ private struct SidebarSectionHeader: View {
     }
 }
 
+private struct QueueSidebarGroup: Identifiable {
+    var id: String { name }
+    let name: String
+    let queues: [QueueSummary]
+}
+
+private struct QueueGroupHeader: View {
+    let group: QueueSidebarGroup
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(group.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(group.queues.count.formatted())
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.08), in: Capsule())
+        }
+    }
+}
+
 private struct QueueSidebarRow: View {
     let queue: QueueSummary
     let isSelected: Bool
+    let editGroup: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -687,6 +767,20 @@ private struct QueueSidebarRow: View {
             }
 
             Spacer()
+
+            Button(action: editGroup) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.clear)
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isSelected ? .white.opacity(0.82) : .secondary)
+                }
+                .frame(width: 34, height: 30)
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .help("Move to group")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
@@ -716,6 +810,75 @@ private struct QueueSidebarRow: View {
         case .failing: "exclamationmark.triangle.fill"
         case .unknown: "questionmark"
         }
+    }
+}
+
+private struct QueueGroupPopover: View {
+    let queue: QueueSummary
+    @Binding var groupName: String
+    let existingGroups: [String]
+    let save: (String?) -> Void
+    let clear: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Move Queue")
+                    .font(.headline)
+                Text(queue.resolvedDisplayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Group")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("Production", text: $groupName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .onSubmit(saveGroup)
+            }
+
+            if !existingGroups.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Existing groups")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(existingGroups.prefix(5), id: \.self) { group in
+                            Button(group) {
+                                groupName = group
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Button("Ungroup", action: clear)
+                    .buttonStyle(.borderless)
+                    .disabled(queue.groupName == nil)
+                Spacer()
+                Button("Move", action: saveGroup)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(14)
+        .frame(width: 305)
+        .onAppear {
+            isFocused = true
+        }
+    }
+
+    private func saveGroup() {
+        save(groupName)
     }
 }
 

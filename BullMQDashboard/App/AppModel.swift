@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
     @Published var selectedJobDetail: JobDetail?
     @Published var workers: [WorkerSummary] = []
     @Published var schedulers: [SchedulerSummary] = []
+    @Published var metricTimingJobs: [JobSummary] = []
     @Published var snapshots: [QueueMetricSnapshot] = []
     @Published var isConnected = false
     @Published var activeLoadingPhases: Set<LoadingPhase> = []
@@ -51,9 +52,11 @@ final class AppModel: ObservableObject {
     private var runTotalsByQuery: [String: Int] = [:]
     private var workersByQueue: [String: [WorkerSummary]] = [:]
     private var schedulersByQueue: [String: [SchedulerSummary]] = [:]
+    private var metricTimingJobsByQueue: [String: [JobSummary]] = [:]
     private var loadingPhaseCounts: [LoadingPhase: Int] = [:]
     private var refreshTask: Task<Void, Never>?
     private var lastSnapshotCountsByQueue: [String: QueueCounts] = [:]
+    private var lastSnapshotNativeMetricsByQueue: [String: BullMQNativeMetrics] = [:]
 
     init(
         engine: BullMQEngine = BullMQRedisEngine(),
@@ -131,6 +134,7 @@ final class AppModel: ObservableObject {
         schedulersByQueue = [:]
         loadingPhaseCounts = [:]
         lastSnapshotCountsByQueue = [:]
+        lastSnapshotNativeMetricsByQueue = [:]
     }
 
     func saveCurrentProfile() {
@@ -222,6 +226,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func assignQueue(_ queue: QueueSummary, toGroup rawGroupName: String?) {
+        let groupName = normalizedQueueGroupName(rawGroupName)
+        guard let index = queues.firstIndex(where: { $0.name == queue.name }) else { return }
+        queues[index].groupName = groupName
+        if selectedQueue?.name == queue.name {
+            selectedQueue = queues[index]
+        }
+        persistCurrentQueueMetadata()
+    }
+
     func refreshSelectedQueue() async {
         await refreshSelectedQueue(for: selectedView)
     }
@@ -286,13 +300,24 @@ final class AppModel: ObservableObject {
         guard isCurrentRefresh(requestID, queueName: queueName) else { return }
         var updatedOverview = overview
         updatedOverview.displayName = overview.displayName ?? selectedQueue.displayName
+        updatedOverview.groupName = overview.groupName ?? selectedQueue.groupName
         replaceQueue(updatedOverview)
         persistCurrentQueueMetadata()
         self.selectedQueue = updatedOverview
 
         switch view {
         case .overview:
-            recordSnapshot(queueName: queueName, counts: updatedOverview.counts)
+            let loadedSnapshots = try await engine.getMetrics(queueName: queueName, prefix: prefix)
+            let timingJobs = try await loadMetricTimingJobs(queueName: queueName)
+            try Task.checkCancellation()
+            guard isCurrentRefresh(requestID, queueName: queueName) else { return }
+            if let loadedSnapshot = loadedSnapshots.last {
+                recordSnapshot(queueName: queueName, counts: updatedOverview.counts, nativeMetrics: loadedSnapshot.nativeMetrics)
+            } else {
+                recordSnapshot(queueName: queueName, counts: updatedOverview.counts)
+            }
+            metricTimingJobsByQueue[cacheKey(queueName)] = timingJobs
+            metricTimingJobs = timingJobs
             statusMessage = "Refreshed \(queueName)"
         case .runs:
             statusMessage = "Loading \(queueName) runs…"
@@ -322,7 +347,17 @@ final class AppModel: ObservableObject {
             schedulers = loadedSchedulers
             statusMessage = "Loaded \(loadedSchedulers.count) schedulers for \(queueName)"
         case .metrics:
-            recordSnapshot(queueName: queueName, counts: updatedOverview.counts)
+            let loadedSnapshots = try await engine.getMetrics(queueName: queueName, prefix: prefix)
+            let timingJobs = try await loadMetricTimingJobs(queueName: queueName)
+            try Task.checkCancellation()
+            guard isCurrentRefresh(requestID, queueName: queueName) else { return }
+            if let loadedSnapshot = loadedSnapshots.last {
+                recordSnapshot(queueName: queueName, counts: updatedOverview.counts, nativeMetrics: loadedSnapshot.nativeMetrics)
+            } else {
+                recordSnapshot(queueName: queueName, counts: updatedOverview.counts)
+            }
+            metricTimingJobsByQueue[cacheKey(queueName)] = timingJobs
+            metricTimingJobs = timingJobs
             statusMessage = "Recorded \(queueName) metrics snapshot"
         case .flowGraph:
             statusMessage = "Refreshed \(queueName)"
@@ -372,10 +407,21 @@ final class AppModel: ObservableObject {
         return JobPage(jobs: pageJobs, total: total, page: runPage, pageSize: runPageSize)
     }
 
+    private func loadMetricTimingJobs(queueName: String) async throws -> [JobSummary] {
+        try await engine.getRecentJobs(
+            queueName: queueName,
+            prefix: prefix,
+            states: [.completed, .failed],
+            perStateLimit: 120,
+            totalLimit: 200
+        )
+    }
+
     private func replaceQueue(_ queue: QueueSummary) {
         var queue = queue
         if let index = queues.firstIndex(where: { $0.name == queue.name }) {
             queue.displayName = queue.displayName ?? queues[index].displayName
+            queue.groupName = queue.groupName ?? queues[index].groupName
             queues[index] = queue
         } else {
             queues.append(queue)
@@ -413,6 +459,7 @@ final class AppModel: ObservableObject {
         runTotal = 0
         workers = []
         schedulers = []
+        metricTimingJobs = []
         selectedQueue = nil
         selectedState = nil
         selectedJob = nil
@@ -421,6 +468,9 @@ final class AppModel: ObservableObject {
         runTotalsByQuery = [:]
         workersByQueue = [:]
         schedulersByQueue = [:]
+        metricTimingJobsByQueue = [:]
+        lastSnapshotCountsByQueue = [:]
+        lastSnapshotNativeMetricsByQueue = [:]
     }
 
     private func persistCurrentQueueNames() {
@@ -451,6 +501,7 @@ final class AppModel: ObservableObject {
         applyCachedRuns(for: queueName)
         workers = workersByQueue[key] ?? []
         schedulers = schedulersByQueue[key] ?? []
+        metricTimingJobs = metricTimingJobsByQueue[key] ?? []
     }
 
     private func applyCachedRuns(for queueName: String) {
@@ -459,13 +510,16 @@ final class AppModel: ObservableObject {
         runTotal = runTotalsByQuery[key] ?? 0
     }
 
-    private func recordSnapshot(queueName: String, counts: QueueCounts) {
-        guard lastSnapshotCountsByQueue[queueName] != counts else { return }
+    private func recordSnapshot(queueName: String, counts: QueueCounts, nativeMetrics: BullMQNativeMetrics? = nil) {
+        let previousNativeMetrics = lastSnapshotNativeMetricsByQueue[queueName]
+        guard lastSnapshotCountsByQueue[queueName] != counts || previousNativeMetrics != nativeMetrics else { return }
         lastSnapshotCountsByQueue[queueName] = counts
+        lastSnapshotNativeMetricsByQueue[queueName] = nativeMetrics
         let snapshot = QueueMetricSnapshot(
             queueName: queueName,
             capturedAt: Date(),
-            counts: QueueCountsSnapshot(counts: counts)
+            counts: QueueCountsSnapshot(counts: counts),
+            nativeMetrics: nativeMetrics
         )
         snapshotStore.append(snapshot)
         snapshots = snapshotStore.load()
@@ -511,6 +565,11 @@ final class AppModel: ObservableObject {
     }
 
     private func normalizedManualQueueDisplayName(_ rawName: String?) -> String? {
+        let name = rawName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
+    private func normalizedQueueGroupName(_ rawName: String?) -> String? {
         let name = rawName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? nil : name
     }

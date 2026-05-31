@@ -149,13 +149,13 @@ struct QueueDashboardView: View {
 
     @ViewBuilder
     private func observabilityGrid(_ queue: QueueSummary) -> some View {
-        let hasTrendData = model.snapshots.contains { $0.queueName == queue.name }
+        let hasNativeMetrics = model.snapshots.contains { $0.queueName == queue.name && $0.nativeMetrics?.hasSamples == true }
         let hasWorkers = !model.workers.isEmpty
         let hasFailures = model.jobs.contains { $0.state == .failed }
         let hasSchedulers = !model.schedulers.isEmpty
 
         VStack(spacing: 18) {
-            if hasTrendData {
+            if hasNativeMetrics {
                 MetricsPanel(queue: queue, style: .compact)
             }
 
@@ -342,8 +342,12 @@ private struct MetricsPanel: View {
     @ViewBuilder
     var body: some View {
         let snapshots = recentSnapshots
-        let points = throughputPoints(snapshots)
-        let previousCounts = snapshots.dropLast().last?.counts
+        let nativeMetrics = latestNativeMetrics(from: snapshots)
+        let throughput = nativeMetrics.map(NativeThroughputSummary.init(metrics:))
+        let terminalMetrics = nativeMetrics.map(NativeTerminalSummary.init(metrics:))
+        let displayCounts = countsForMetrics(terminalMetrics)
+        let sampleCount = nativeMetrics?.sampleCount ?? 0
+        let timing = MetricTimingSummary(jobs: model.metricTimingJobs)
 
         if style == .detailed {
             VStack(alignment: .leading, spacing: 34) {
@@ -351,8 +355,8 @@ private struct MetricsPanel: View {
                     title: "Queue pressure",
                     subtitle: "Live queue shape and retry signals",
                     icon: "gauge.with.dots.needle.67percent",
-                    tint: .green,
-                    trailing: snapshots.count == 1 ? "1 sample" : "\(snapshots.count.formatted()) samples"
+                    tint: pressureSectionTint(terminalMetrics),
+                    trailing: sampleCount == 1 ? "1 sample" : "\(sampleCount.formatted()) samples"
                 ) {
                     VStack(spacing: 0) {
                         SignalMetricRow(
@@ -365,10 +369,10 @@ private struct MetricsPanel: View {
                         Divider().padding(.leading, 58)
                         SignalMetricRow(
                             title: "Failure pressure",
-                            value: percentText(failureRate),
-                            caption: "\(queue.counts.failed.compactCountDisplay) failed / \(completedAndFailed.compactCountDisplay) terminal",
+                            value: percentText(failureRate(terminalMetrics)),
+                            caption: failurePressureCaption(terminalMetrics),
                             icon: "exclamationmark.triangle",
-                            tint: failureRate > 0.05 ? .red : .green
+                            tint: failureTint(terminalMetrics)
                         )
                         Divider().padding(.leading, 58)
                         SignalMetricRow(
@@ -380,59 +384,75 @@ private struct MetricsPanel: View {
                         )
                         Divider().padding(.leading, 58)
                         SignalMetricRow(
-                            title: "Retry pressure",
-                            value: retryPressureValue,
-                            caption: retryPressureCaption,
-                            icon: "arrow.clockwise",
-                            tint: retryPressureTint
+                            title: "Terminal jobs",
+                            value: terminalTotal(terminalMetrics).compactCountDisplay,
+                            caption: terminalTotalCaption(terminalMetrics),
+                            icon: "sum",
+                            tint: terminalTotal(terminalMetrics) > 0 ? .blue : .secondary
                         )
                     }
                 }
 
                 MetricSettingsSection(
                     title: "State mix",
-                    subtitle: "Distribution across BullMQ states",
+                    subtitle: "Distribution across states",
                     icon: "chart.bar.xaxis",
-                    tint: .teal,
-                    trailing: "\(totalKnownJobs.compactCountDisplay) known jobs"
+                    tint: displayCounts.failed > 0 ? .red : .teal,
+                    trailing: "\(totalKnownJobs(displayCounts).compactCountDisplay) known jobs"
                 ) {
-                    StateMixBar(counts: queue.counts, boxed: false)
+                    StateMixBar(counts: displayCounts, boxed: false)
                 }
 
                 MetricSettingsSection(
                     title: "Throughput",
-                    subtitle: "Completed and failed jobs per minute",
-                    icon: "chart.line.uptrend.xyaxis",
-                    tint: .green,
-                    trailing: "jobs/min"
+                    subtitle: "Worker metrics per minute",
+                    icon: "speedometer",
+                    tint: throughput?.failedPerMinute ?? 0 > 0 ? .red : .blue,
+                    trailing: ""
                 ) {
-                    if points.count < 2 {
+                    if let throughput, let nativeMetrics {
+                        VStack(spacing: 0) {
+                            SignalMetricRow(
+                                title: "Completed throughput",
+                                value: throughput.completedPerMinute.compactRateDisplay,
+                                caption: "Completed jobs per minute",
+                                icon: "checkmark",
+                                tint: .green
+                            )
+                            Divider().padding(.leading, 58)
+                            SignalMetricRow(
+                                title: "Failed throughput",
+                                value: throughput.failedPerMinute.compactRateDisplay,
+                                caption: "Failed jobs per minute",
+                                icon: "xmark",
+                                tint: .red
+                            )
+                            Divider().padding(.leading, 58)
+                            SignalMetricRow(
+                                title: "Terminal throughput",
+                                value: throughput.totalPerMinute.compactRateDisplay,
+                                caption: "\(throughput.sampleCount.formatted()) buckets sampled",
+                                icon: "sum",
+                                tint: throughput.totalPerMinute > 0 ? .blue : .secondary
+                            )
+                            Divider().padding(.leading, 58)
+                            ThroughputMetricChart(metrics: nativeMetrics, timing: timing, compact: false)
+                                .padding(14)
+                        }
+                    } else {
                         SectionEmptyState(
-                            icon: "chart.line.uptrend.xyaxis",
-                            message: "Refresh this queue a few times to build local throughput samples."
+                            icon: "speedometer",
+                            message: "Worker metrics are not enabled for this queue."
                         )
                         .frame(minHeight: 120, alignment: .topLeading)
                         .padding(14)
-                    } else {
-                        throughputChart(points)
-                            .padding(14)
                     }
-                }
-
-                MetricSettingsSection(
-                    title: "Snapshot change",
-                    subtitle: "Movement since the previous local sample",
-                    icon: "plus.forwardslash.minus",
-                    tint: .blue,
-                    trailing: deltaDetail(previousCounts)
-                ) {
-                    MetricsDeltaList(current: queue.counts.snapshot, previous: previousCounts, boxed: false)
                 }
             }
         } else {
             VStack(alignment: .leading, spacing: 14) {
                 MetricOverviewCard {
-                    metricsHeader(sampleCount: snapshots.count)
+                    metricsHeader(sampleCount: sampleCount, usesNativeMetrics: nativeMetrics != nil)
                 }
 
                 MetricOverviewCard {
@@ -447,10 +467,10 @@ private struct MetricsPanel: View {
 
                         SignalMetricCard(
                             title: "Failure pressure",
-                            value: percentText(failureRate),
-                            caption: "\(queue.counts.failed.compactCountDisplay) failed / \(completedAndFailed.compactCountDisplay) terminal",
+                            value: percentText(failureRate(terminalMetrics)),
+                            caption: failurePressureCaption(terminalMetrics),
                             icon: "exclamationmark.triangle",
-                            tint: failureRate > 0.05 ? .red : .green
+                            tint: failureTint(terminalMetrics)
                         )
 
                         SignalMetricCard(
@@ -462,31 +482,49 @@ private struct MetricsPanel: View {
                         )
 
                         SignalMetricCard(
-                            title: "Retry pressure",
-                            value: retryPressureValue,
-                            caption: retryPressureCaption,
-                            icon: "arrow.clockwise",
-                            tint: retryPressureTint
+                            title: "Terminal jobs",
+                            value: terminalTotal(terminalMetrics).compactCountDisplay,
+                            caption: terminalTotalCaption(terminalMetrics),
+                            icon: "sum",
+                            tint: terminalTotal(terminalMetrics) > 0 ? .blue : .secondary
                         )
                     }
                 }
 
                 MetricOverviewCard {
-                    MetricsSection(title: "State mix", detail: "\(totalKnownJobs.compactCountDisplay) known jobs") {
-                        StateMixBar(counts: queue.counts)
+                    MetricsSection(title: "State mix", detail: "\(totalKnownJobs(displayCounts).compactCountDisplay) known jobs") {
+                        StateMixBar(counts: displayCounts)
                     }
                 }
 
                 MetricOverviewCard {
-                    MetricsSection(title: "Throughput", detail: "jobs/min") {
-                        if points.count < 2 {
+                    MetricsSection(title: "Throughput", detail: "") {
+                        if let throughput, let nativeMetrics {
+                            VStack(spacing: 12) {
+                                LazyVGrid(columns: metricColumns, spacing: 10) {
+                                    SignalMetricCard(
+                                        title: "Completed/min",
+                                        value: throughput.completedPerMinute.compactRateDisplay,
+                                        caption: "",
+                                        icon: "checkmark",
+                                        tint: .green
+                                    )
+                                    SignalMetricCard(
+                                        title: "Failed/min",
+                                        value: throughput.failedPerMinute.compactRateDisplay,
+                                        caption: "",
+                                        icon: "xmark",
+                                        tint: .red
+                                    )
+                                }
+                                ThroughputMetricChart(metrics: nativeMetrics, timing: timing, compact: true)
+                            }
+                        } else {
                             SectionEmptyState(
-                                icon: "chart.line.uptrend.xyaxis",
-                                message: "Refresh this queue a few times to build local throughput samples."
+                                icon: "speedometer",
+                                message: "Worker metrics are not enabled for this queue."
                             )
                             .frame(minHeight: 92, alignment: .topLeading)
-                        } else {
-                            throughputChart(points)
                         }
                     }
                 }
@@ -508,6 +546,10 @@ private struct MetricsPanel: View {
             .suffix(40))
     }
 
+    private func latestNativeMetrics(from snapshots: [QueueMetricSnapshot]) -> BullMQNativeMetrics? {
+        snapshots.last(where: { $0.nativeMetrics?.hasSamples == true })?.nativeMetrics
+    }
+
     private var backlog: Int {
         queue.counts.waiting + queue.counts.delayed + queue.counts.prioritized + queue.counts.waitingChildren
     }
@@ -526,47 +568,67 @@ private struct MetricsPanel: View {
         return queue.counts.active == 1 ? "1 job currently processing" : "\(queue.counts.active.compactCountDisplay) jobs currently processing"
     }
 
-    private var completedAndFailed: Int {
-        queue.counts.completed + queue.counts.failed
+    private func countsForMetrics(_ terminalMetrics: NativeTerminalSummary?) -> QueueCounts {
+        guard let terminalMetrics else { return queue.counts }
+        var counts = queue.counts
+        counts.completed = terminalMetrics.completed
+        counts.failed = terminalMetrics.failed
+        return counts
     }
 
-    private var failureRate: Double {
-        guard completedAndFailed > 0 else { return 0 }
-        return Double(queue.counts.failed) / Double(completedAndFailed)
+    private func failureRate(_ terminalMetrics: NativeTerminalSummary?) -> Double {
+        let failed = terminalMetrics?.failed ?? queue.counts.failed
+        let terminal = terminalMetrics?.total ?? (queue.counts.completed + queue.counts.failed)
+        guard terminal > 0 else { return 0 }
+        return Double(failed) / Double(terminal)
     }
 
-    private var retryPressureJobs: [JobSummary] {
-        model.jobs.filter { $0.attemptsMade > 0 || ($0.attempts ?? 0) > 1 }
+    private func failureTint(_ terminalMetrics: NativeTerminalSummary?) -> Color {
+        let failed = terminalMetrics?.failed ?? queue.counts.failed
+        return failed > 0 ? .red : .secondary
     }
 
-    private var retryPressureValue: String {
-        guard !model.jobs.isEmpty else { return "—" }
-        return percentText(Double(retryPressureJobs.count) / Double(model.jobs.count))
+    private func pressureSectionTint(_ terminalMetrics: NativeTerminalSummary?) -> Color {
+        let failed = terminalMetrics?.failed ?? queue.counts.failed
+        if failed > 0 { return .red }
+        if backlog > 0 { return .teal }
+        return .blue
     }
 
-    private var retryPressureCaption: String {
-        guard !model.jobs.isEmpty else { return "Open Runs to sample retry activity" }
-        let retrying = retryPressureJobs.count
-        return retrying == 1 ? "1 visible run has retries" : "\(retrying.compactCountDisplay) visible runs have retries"
+    private func failurePressureCaption(_ terminalMetrics: NativeTerminalSummary?) -> String {
+        let failed = terminalMetrics?.failed ?? queue.counts.failed
+        let terminal = terminalMetrics?.total ?? (queue.counts.completed + queue.counts.failed)
+        guard terminalMetrics != nil else {
+            return "\(failed.compactCountDisplay) failed / \(terminal.compactCountDisplay) retained terminal"
+        }
+        return "\(failed.compactCountDisplay) failed / \(terminal.compactCountDisplay) terminal"
     }
 
-    private var retryPressureTint: Color {
-        guard !model.jobs.isEmpty else { return .secondary }
-        return retryPressureJobs.isEmpty ? .green : .orange
+    private func terminalTotal(_ terminalMetrics: NativeTerminalSummary?) -> Int {
+        terminalMetrics?.total ?? (queue.counts.completed + queue.counts.failed)
     }
 
-    private var totalKnownJobs: Int {
-        queue.counts.waiting
-            + queue.counts.active
-            + queue.counts.delayed
-            + queue.counts.prioritized
-            + queue.counts.completed
-            + queue.counts.failed
-            + queue.counts.paused
-            + queue.counts.waitingChildren
+    private func terminalTotalCaption(_ terminalMetrics: NativeTerminalSummary?) -> String {
+        let completed = terminalMetrics?.completed ?? queue.counts.completed
+        let failed = terminalMetrics?.failed ?? queue.counts.failed
+        guard terminalMetrics != nil else {
+            return "\(completed.compactCountDisplay) completed / \(failed.compactCountDisplay) failed retained"
+        }
+        return "\(completed.compactCountDisplay) completed / \(failed.compactCountDisplay) failed"
     }
 
-    private func metricsHeader(sampleCount: Int) -> some View {
+    private func totalKnownJobs(_ counts: QueueCounts) -> Int {
+        counts.waiting
+            + counts.active
+            + counts.delayed
+            + counts.prioritized
+            + counts.completed
+            + counts.failed
+            + counts.paused
+            + counts.waitingChildren
+    }
+
+    private func metricsHeader(sampleCount: Int, usesNativeMetrics: Bool) -> some View {
         HStack(spacing: 8) {
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
@@ -580,7 +642,7 @@ private struct MetricsPanel: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Metrics")
                     .font(.subheadline.weight(.semibold))
-                Text("Live pressure, throughput, and trend signals")
+                Text(usesNativeMetrics ? "Worker metrics and live queue pressure" : "Live queue pressure; worker metrics unavailable")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -593,97 +655,12 @@ private struct MetricsPanel: View {
         }
     }
 
-    private func throughputChart(_ points: [ThroughputPoint]) -> some View {
-        Chart(points) { point in
-            AreaMark(
-                x: .value("Time", point.date),
-                yStart: .value("Baseline", 0),
-                yEnd: .value("Completed", point.completedPerMinute)
-            )
-            .interpolationMethod(.catmullRom)
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [.green.opacity(0.20), .green.opacity(0.012)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-
-            LineMark(
-                x: .value("Time", point.date),
-                y: .value("Completed", point.completedPerMinute)
-            )
-            .interpolationMethod(.catmullRom)
-            .lineStyle(StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
-            .foregroundStyle(.green)
-
-            LineMark(
-                x: .value("Time", point.date),
-                y: .value("Failed", point.failedPerMinute)
-            )
-            .interpolationMethod(.catmullRom)
-            .lineStyle(StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-            .foregroundStyle(.red)
-        }
-        .chartYScale(domain: 0...throughputUpperBound(points))
-        .chartXAxis(.hidden)
-        .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6))
-                    .foregroundStyle(Color.primary.opacity(0.08))
-                AxisValueLabel()
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(height: style == .detailed ? 210 : 130)
-    }
-
-    private func throughputPoints(_ snapshots: [QueueMetricSnapshot]) -> [ThroughputPoint] {
-        guard let first = snapshots.first else { return [] }
-        var points = [
-            ThroughputPoint(
-                date: first.capturedAt,
-                completedPerMinute: 0,
-                failedPerMinute: 0
-            )
-        ]
-
-        for index in snapshots.indices.dropFirst() {
-            let current = snapshots[index]
-            let previous = snapshots[snapshots.index(before: index)]
-            let minutes = max(current.capturedAt.timeIntervalSince(previous.capturedAt) / 60, 1.0 / 60)
-            let completedDelta = max(0, current.counts.completed - previous.counts.completed)
-            let failedDelta = max(0, current.counts.failed - previous.counts.failed)
-            points.append(
-                ThroughputPoint(
-                    date: current.capturedAt,
-                    completedPerMinute: Double(completedDelta) / minutes,
-                    failedPerMinute: Double(failedDelta) / minutes
-                )
-            )
-        }
-
-        return points
-    }
-
-    private func throughputUpperBound(_ points: [ThroughputPoint]) -> Double {
-        let maxValue = points
-            .map { max($0.completedPerMinute, $0.failedPerMinute) }
-            .max() ?? 0
-        return max(maxValue * 1.15, 1)
-    }
-
     private func percentText(_ value: Double) -> String {
         let percent = value * 100
         if percent >= 10 || percent.rounded(.down) == percent {
             return "\(Int(percent.rounded()))%"
         }
         return String(format: "%.1f%%", percent)
-    }
-
-    private func deltaDetail(_ previous: QueueCountsSnapshot?) -> String {
-        previous == nil ? "needs 2 samples" : "since last snapshot"
     }
 }
 
@@ -692,11 +669,316 @@ private enum MetricsPanelStyle {
     case detailed
 }
 
-private struct ThroughputPoint: Identifiable {
-    let id = UUID()
-    let date: Date
+private struct NativeThroughputSummary {
     let completedPerMinute: Double
     let failedPerMinute: Double
+    let totalPerMinute: Double
+    let sampleCount: Int
+
+    init(metrics: BullMQNativeMetrics) {
+        sampleCount = metrics.sampleCount
+        let denominator = Double(max(sampleCount, 1))
+        completedPerMinute = Double(metrics.completed.data.reduce(0, +)) / denominator
+        failedPerMinute = Double(metrics.failed.data.reduce(0, +)) / denominator
+        totalPerMinute = completedPerMinute + failedPerMinute
+    }
+}
+
+private struct NativeTerminalSummary {
+    let completed: Int
+    let failed: Int
+    let total: Int
+
+    init(metrics: BullMQNativeMetrics) {
+        completed = metrics.completed.count
+        failed = metrics.failed.count
+        total = completed + failed
+    }
+}
+
+private enum ThroughputMetricSeries: String, CaseIterable, Identifiable {
+    case completed = "Completed"
+    case failed = "Failed"
+
+    var id: String { rawValue }
+
+    var color: Color {
+        switch self {
+        case .completed: .green
+        case .failed: .red
+        }
+    }
+}
+
+private struct ThroughputMetricPoint: Identifiable {
+    let bucketIndex: Int
+    let completedPerMinute: Double
+    let failedPerMinute: Double
+
+    var id: Int { bucketIndex }
+    var hasActivity: Bool { completedPerMinute > 0 || failedPerMinute > 0 }
+}
+
+private enum ThroughputMetricTimeframe: String, CaseIterable, Identifiable {
+    case oneHour = "1h"
+    case oneDay = "1d"
+    case oneWeek = "1w"
+    case fourWeeks = "4w"
+
+    var id: String { rawValue }
+
+    var bucketCount: Int {
+        switch self {
+        case .oneHour: 60
+        case .oneDay: 1_440
+        case .oneWeek: 10_080
+        case .fourWeeks: 40_320
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .oneHour: "Last hour"
+        case .oneDay: "Last day"
+        case .oneWeek: "Last week"
+        case .fourWeeks: "Last 4 weeks"
+        }
+    }
+}
+
+private struct MetricTimingSummary {
+    let p50Wait: TimeInterval?
+    let p95Duration: TimeInterval?
+
+    init(jobs: [JobSummary]) {
+        p50Wait = Self.percentile(
+            jobs.compactMap { job in
+                guard let timestamp = job.timestamp, let processedOn = job.processedOn else { return nil }
+                return max(0, processedOn.timeIntervalSince(timestamp))
+            },
+            percentile: 0.50
+        )
+        p95Duration = Self.percentile(
+            jobs.compactMap(\.duration),
+            percentile: 0.95
+        )
+    }
+
+    private static func percentile(_ values: [TimeInterval], percentile: Double) -> TimeInterval? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        let index = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * percentile).rounded(.up))))
+        return sorted[index]
+    }
+}
+
+private struct ThroughputMetricChart: View {
+    let metrics: BullMQNativeMetrics
+    let timing: MetricTimingSummary
+    var compact = false
+
+    @State private var timeframe: ThroughputMetricTimeframe = .oneHour
+
+    private var visibleBucketCount: Int {
+        min(metrics.sampleCount, timeframe.bucketCount)
+    }
+
+    private var points: [ThroughputMetricPoint] {
+        let bucketCount = visibleBucketCount
+        guard bucketCount > 0 else { return [] }
+
+        let groupSize = max(1, Int(ceil(Double(bucketCount) / Double(compact ? 48 : 64))))
+        return stride(from: 0, to: bucketCount, by: groupSize).map { start in
+            let end = min(start + groupSize, bucketCount)
+            let completed = (start..<end).reduce(0) { total, bucketIndex in
+                total + bucketValue(metrics.completed.data, bucketIndex: bucketIndex, bucketCount: bucketCount)
+            }
+            let failed = (start..<end).reduce(0) { total, bucketIndex in
+                total + bucketValue(metrics.failed.data, bucketIndex: bucketIndex, bucketCount: bucketCount)
+            }
+            return ThroughputMetricPoint(
+                bucketIndex: start,
+                completedPerMinute: Double(completed) / Double(end - start),
+                failedPerMinute: Double(failed) / Double(end - start)
+            )
+        }
+    }
+
+    private var activePoints: [ThroughputMetricPoint] {
+        points.filter(\.hasActivity)
+    }
+
+    private var yDomain: ClosedRange<Double> {
+        let peak = activePoints.map { max($0.completedPerMinute, $0.failedPerMinute) }.max() ?? 0
+        return 0...Double(max(1, peak))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            chartHeader
+
+            if activePoints.isEmpty {
+                SectionEmptyState(
+                    icon: "chart.bar",
+                    message: "No completed or failed jobs in this timeframe."
+                )
+                .frame(height: compact ? 72 : 118, alignment: .topLeading)
+            } else {
+                Chart(points) { point in
+                    BarMark(
+                        x: .value("Bucket", point.bucketIndex),
+                        y: .value("Completed", point.completedPerMinute)
+                    )
+                    .foregroundStyle(.green)
+                    .position(by: .value("Series", ThroughputMetricSeries.completed.rawValue))
+
+                    BarMark(
+                        x: .value("Bucket", point.bucketIndex),
+                        y: .value("Failed", point.failedPerMinute)
+                    )
+                    .foregroundStyle(.red)
+                    .position(by: .value("Series", ThroughputMetricSeries.failed.rawValue))
+                }
+                .chartXScale(domain: 0...max(visibleBucketCount - 1, 1))
+                .chartYScale(domain: yDomain)
+                .chartXAxis(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: compact ? 2 : 4)) { value in
+                        AxisGridLine()
+                            .foregroundStyle(Color.primary.opacity(0.06))
+                        AxisValueLabel {
+                            if let intValue = value.as(Int.self) {
+                                Text(intValue.compactCountDisplay)
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .frame(height: compact ? 118 : 190)
+            }
+
+            TimingStatGrid(timing: timing, compact: compact)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var chartHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Throughput · jobs/min")
+                        .font(.caption.weight(.semibold))
+                        .textCase(.uppercase)
+                        .tracking(2.6)
+                        .foregroundStyle(.secondary)
+                    Text("\(timeframe.label) · \(visibleBucketCount.formatted()) buckets")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 9) {
+                    chartLegend
+                    timeframePicker
+                }
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                Text("Throughput · jobs/min")
+                    .font(.caption.weight(.semibold))
+                    .textCase(.uppercase)
+                    .tracking(2.6)
+                    .foregroundStyle(.secondary)
+                chartLegend
+                timeframePicker
+                Text("\(timeframe.label) · \(visibleBucketCount.formatted()) buckets")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var chartLegend: some View {
+        HStack(spacing: 12) {
+            ThroughputMetricLegend(series: .completed)
+            ThroughputMetricLegend(series: .failed)
+        }
+    }
+
+    private var timeframePicker: some View {
+        Picker("Timeframe", selection: $timeframe) {
+            ForEach(ThroughputMetricTimeframe.allCases) { timeframe in
+                Text(timeframe.rawValue).tag(timeframe)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: compact ? 154 : 192)
+    }
+
+    private func bucketValue(_ data: [Int], bucketIndex: Int, bucketCount: Int) -> Int {
+        let dataIndex = bucketCount - bucketIndex - 1
+        guard data.indices.contains(dataIndex) else { return 0 }
+        return data[dataIndex]
+    }
+}
+
+private struct TimingStatGrid: View {
+    let timing: MetricTimingSummary
+    var compact = false
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                TimingStatBox(title: "P50 wait", value: timing.p50Wait?.compactDurationDisplay ?? "—")
+                TimingStatBox(title: "P95 duration", value: timing.p95Duration?.compactDurationDisplay ?? "—")
+            }
+            VStack(spacing: 8) {
+                TimingStatBox(title: "P50 wait", value: timing.p50Wait?.compactDurationDisplay ?? "—")
+                TimingStatBox(title: "P95 duration", value: timing.p95Duration?.compactDurationDisplay ?? "—")
+            }
+        }
+    }
+}
+
+private struct TimingStatBox: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .tracking(1.9)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.callout.monospacedDigit().weight(.semibold))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 4))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(Color.primary.opacity(0.08))
+        }
+    }
+}
+
+private struct ThroughputMetricLegend: View {
+    let series: ThroughputMetricSeries
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(series.color)
+                .frame(width: 6, height: 6)
+            Text(series.rawValue)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
 private struct SignalMetricCard: View {
@@ -725,10 +1007,12 @@ private struct SignalMetricCard: View {
                     .font(.title3.monospacedDigit().weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if !caption.isEmpty {
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 0)
@@ -823,10 +1107,12 @@ private struct MetricSettingsSection<Content: View>: View {
 
                 Spacer(minLength: 12)
 
-                Text(trailing)
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if !trailing.isEmpty {
+                    Text(trailing)
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             content
@@ -852,9 +1138,11 @@ private struct MetricsSection<Content: View>: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(detail)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
             content
         }
@@ -954,77 +1242,6 @@ private struct StateMixLegend: View {
                 .font(.caption2.monospacedDigit().weight(.semibold))
         }
         .lineLimit(1)
-    }
-}
-
-private struct MetricsDeltaList: View {
-    let current: QueueCountsSnapshot
-    let previous: QueueCountsSnapshot?
-    var boxed = true
-
-    var body: some View {
-        VStack(spacing: 0) {
-            MetricsDeltaRow(title: "Completed", value: current.completed, previous: previous?.completed, tint: .green)
-            Divider().padding(.leading, 12)
-            MetricsDeltaRow(title: "Failed", value: current.failed, previous: previous?.failed, tint: .red)
-            Divider().padding(.leading, 12)
-            MetricsDeltaRow(title: "Backlog", value: current.backlog, previous: previous?.backlog, tint: .teal)
-        }
-        .background {
-            if boxed {
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            }
-        }
-    }
-}
-
-private struct MetricsDeltaRow: View {
-    let title: String
-    let value: Int
-    let previous: Int?
-    let tint: Color
-
-    var body: some View {
-        HStack {
-            Text(title)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value.compactCountDisplay)
-                .font(.callout.monospacedDigit().weight(.semibold))
-            Text(deltaText)
-                .font(.caption.monospacedDigit().weight(.medium))
-                .foregroundStyle(deltaColor)
-                .frame(width: 58, alignment: .trailing)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-    }
-
-    private var deltaText: String {
-        guard let previous else { return "—" }
-        let delta = value - previous
-        if delta == 0 { return "±0" }
-        return delta > 0 ? "+\(delta.compactCountDisplay)" : delta.compactCountDisplay
-    }
-
-    private var deltaColor: Color {
-        guard let previous else { return .secondary }
-        if value == previous { return .secondary }
-        return value > previous ? tint : .secondary
-    }
-}
-
-private extension QueueCounts {
-    var snapshot: QueueCountsSnapshot {
-        QueueCountsSnapshot(counts: self)
-    }
-}
-
-private extension QueueCountsSnapshot {
-    var backlog: Int {
-        waiting + delayed + prioritized + waitingChildren
     }
 }
 
@@ -1928,5 +2145,23 @@ private extension View {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Color.primary.opacity(0.055))
             }
+    }
+}
+
+private extension BullMQNativeMetrics {
+    var sampleCount: Int {
+        max(completed.data.count, failed.data.count)
+    }
+}
+
+private extension Double {
+    var compactRateDisplay: String {
+        if self > 0, self < 0.1 {
+            return "<0.1"
+        }
+        if self < 10, rounded(.down) != self {
+            return String(format: "%.1f", self)
+        }
+        return Int(rounded()).compactCountDisplay
     }
 }

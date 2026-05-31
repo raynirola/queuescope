@@ -57,6 +57,17 @@ final class BullMQParsingTests: XCTestCase {
         )
     }
 
+    func testQueueGroupNameUsesExplicitMetadata() {
+        XCTAssertEqual(
+            QueueSummary(name: "mail:send", groupName: "Transactional", prefix: "bull", counts: .empty, health: .unknown).resolvedGroupName,
+            "Transactional"
+        )
+        XCTAssertEqual(
+            QueueSummary(name: "mail:send", prefix: "bull", counts: .empty, health: .unknown).resolvedGroupName,
+            "Ungrouped"
+        )
+    }
+
     func testCompactCountDisplayKeepsLargeNumbersShort() {
         XCTAssertEqual(870.compactCountDisplay, "870")
         XCTAssertEqual(1_200.compactCountDisplay, "1.2K")
@@ -153,6 +164,18 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertEqual(model.queues.first?.name, "setup-inboxkit-mailbox-v2")
         XCTAssertEqual(model.queues.first?.displayName, "Inbox setup")
         XCTAssertEqual(model.selectedQueue?.resolvedDisplayName, "Inbox setup")
+    }
+
+    func testQueueCanBeAssignedToExplicitGroup() {
+        let model = AppModel(engine: FakeBullMQEngine())
+        let queue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+        model.queues = [queue]
+        model.selectedQueue = queue
+
+        model.assignQueue(queue, toGroup: "Production")
+
+        XCTAssertEqual(model.queues.first?.groupName, "Production")
+        XCTAssertEqual(model.selectedQueue?.resolvedGroupName, "Production")
     }
 }
 

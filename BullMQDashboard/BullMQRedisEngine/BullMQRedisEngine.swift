@@ -132,13 +132,45 @@ actor BullMQRedisEngine: BullMQEngine {
 
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {
         let overview = try await getQueueOverview(queueName: queueName, prefix: prefix)
+        let nativeMetrics = try await getNativeMetrics(queueName: queueName, prefix: prefix)
         return [
             QueueMetricSnapshot(
                 queueName: queueName,
                 capturedAt: Date(),
-                counts: QueueCountsSnapshot(counts: overview.counts)
+                counts: QueueCountsSnapshot(counts: overview.counts),
+                nativeMetrics: nativeMetrics
             )
         ]
+    }
+
+    private func getNativeMetrics(queueName: String, prefix: String) async throws -> BullMQNativeMetrics? {
+        let completedKey = BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "metrics:completed")
+        let failedKey = BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "metrics:failed")
+        let responses = try await commands([
+            ["HMGET", completedKey, "count", "prevTS", "prevCount"],
+            ["LRANGE", "\(completedKey):data", "0", "-1"],
+            ["HMGET", failedKey, "count", "prevTS", "prevCount"],
+            ["LRANGE", "\(failedKey):data", "0", "-1"]
+        ])
+        let completed = metricSeries(meta: responses[safe: 0] ?? .array([]), data: responses[safe: 1] ?? .array([]))
+        let failed = metricSeries(meta: responses[safe: 2] ?? .array([]), data: responses[safe: 3] ?? .array([]))
+        let metrics = BullMQNativeMetrics(completed: completed, failed: failed)
+        return metrics.hasSamples ? metrics : nil
+    }
+
+    private func metricSeries(meta: RESPValue, data: RESPValue) -> BullMQMetricSeries {
+        let values = responseArray(meta)
+        return BullMQMetricSeries(
+            count: metricInt(values[safe: 0] ?? nil),
+            previousTimestamp: BullMQParsing.dateFromMilliseconds(values[safe: 1] ?? nil),
+            previousCount: metricInt(values[safe: 2] ?? nil),
+            data: arrayStrings(data).compactMap(Int.init)
+        )
+    }
+
+    private func metricInt(_ raw: String?) -> Int {
+        guard let raw else { return 0 }
+        return Int(raw) ?? 0
     }
 
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {

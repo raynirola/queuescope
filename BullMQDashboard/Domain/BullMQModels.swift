@@ -67,6 +67,7 @@ struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
     var id: String { name }
     var name: String
     var displayName: String?
+    var groupName: String?
     var prefix: String
     var counts: QueueCounts
     var health: QueueHealth
@@ -76,9 +77,15 @@ struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
         return trimmed.isEmpty ? name.titleCasedQueueName : trimmed
     }
 
-    init(name: String, displayName: String? = nil, prefix: String, counts: QueueCounts, health: QueueHealth) {
+    var resolvedGroupName: String {
+        let trimmed = groupName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Ungrouped" : trimmed
+    }
+
+    init(name: String, displayName: String? = nil, groupName: String? = nil, prefix: String, counts: QueueCounts, health: QueueHealth) {
         self.name = name
         self.displayName = displayName
+        self.groupName = groupName
         self.prefix = prefix
         self.counts = counts
         self.health = health
@@ -88,6 +95,7 @@ struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
         displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        groupName = try container.decodeIfPresent(String.self, forKey: .groupName)
         prefix = try container.decode(String.self, forKey: .prefix)
         counts = try container.decode(QueueCounts.self, forKey: .counts)
         health = try container.decode(QueueHealth.self, forKey: .health)
@@ -189,6 +197,7 @@ struct QueueMetricSnapshot: Identifiable, Equatable, Codable, Sendable {
     var queueName: String
     var capturedAt: Date
     var counts: QueueCountsSnapshot
+    var nativeMetrics: BullMQNativeMetrics?
 }
 
 struct QueueCountsSnapshot: Equatable, Codable, Sendable {
@@ -200,6 +209,22 @@ struct QueueCountsSnapshot: Equatable, Codable, Sendable {
     var failed: Int
     var paused: Int
     var waitingChildren: Int
+}
+
+struct BullMQNativeMetrics: Equatable, Codable, Sendable {
+    var completed: BullMQMetricSeries
+    var failed: BullMQMetricSeries
+
+    var hasSamples: Bool {
+        !completed.data.isEmpty || !failed.data.isEmpty
+    }
+}
+
+struct BullMQMetricSeries: Equatable, Codable, Sendable {
+    var count: Int
+    var previousTimestamp: Date?
+    var previousCount: Int
+    var data: [Int]
 }
 
 struct WorkerSummary: Identifiable, Equatable, Sendable {

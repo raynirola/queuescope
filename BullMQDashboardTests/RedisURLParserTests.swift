@@ -61,6 +61,7 @@ final class RedisURLParserTests: XCTestCase {
             [
                 QueueSummary(
                     name: "email",
+                    groupName: "Production",
                     prefix: "bull",
                     counts: counts,
                     health: .warning
@@ -70,6 +71,7 @@ final class RedisURLParserTests: XCTestCase {
         )
 
         XCTAssertEqual(store.load(scope: "local:6379/0:bull").first?.name, "email")
+        XCTAssertEqual(store.load(scope: "local:6379/0:bull").first?.groupName, "Production")
         XCTAssertEqual(store.load(scope: "local:6379/0:bull").first?.counts.waiting, 8)
         XCTAssertEqual(store.load(scope: "local:6379/0:bull").first?.health, .warning)
         XCTAssertEqual(store.load(scope: "missing"), [])
