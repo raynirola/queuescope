@@ -415,7 +415,7 @@ private struct MetricsPanel: View {
                             SignalMetricRow(
                                 title: "Completed throughput",
                                 value: throughput.completedPerMinute.compactRateDisplay,
-                                caption: "Completed jobs per minute",
+                                caption: throughput.windowCaption,
                                 icon: "checkmark",
                                 tint: .green
                             )
@@ -423,7 +423,7 @@ private struct MetricsPanel: View {
                             SignalMetricRow(
                                 title: "Failed throughput",
                                 value: throughput.failedPerMinute.compactRateDisplay,
-                                caption: "Failed jobs per minute",
+                                caption: throughput.windowCaption,
                                 icon: "xmark",
                                 tint: .red
                             )
@@ -431,7 +431,7 @@ private struct MetricsPanel: View {
                             SignalMetricRow(
                                 title: "Terminal throughput",
                                 value: throughput.totalPerMinute.compactRateDisplay,
-                                caption: "\(throughput.sampleCount.formatted()) buckets sampled",
+                                caption: throughput.windowCaption,
                                 icon: "sum",
                                 tint: throughput.totalPerMinute > 0 ? .blue : .secondary
                             )
@@ -505,14 +505,14 @@ private struct MetricsPanel: View {
                                     SignalMetricCard(
                                         title: "Completed/min",
                                         value: throughput.completedPerMinute.compactRateDisplay,
-                                        caption: "",
+                                        caption: throughput.windowCaption,
                                         icon: "checkmark",
                                         tint: .green
                                     )
                                     SignalMetricCard(
                                         title: "Failed/min",
                                         value: throughput.failedPerMinute.compactRateDisplay,
-                                        caption: "",
+                                        caption: throughput.windowCaption,
                                         icon: "xmark",
                                         tint: .red
                                     )
@@ -670,17 +670,29 @@ private enum MetricsPanelStyle {
 }
 
 private struct NativeThroughputSummary {
+    private static let recentWindowBucketCount = 15
+
     let completedPerMinute: Double
     let failedPerMinute: Double
     let totalPerMinute: Double
-    let sampleCount: Int
+    let bucketCount: Int
+
+    var windowCaption: String {
+        if bucketCount == Self.recentWindowBucketCount {
+            return "Last \(bucketCount) min"
+        }
+        if bucketCount == 1 {
+            return "Latest minute"
+        }
+        return "Latest \(bucketCount) min"
+    }
 
     init(metrics: BullMQNativeMetrics) {
-        sampleCount = metrics.sampleCount
-        let denominator = Double(max(sampleCount, 1))
-        completedPerMinute = Double(metrics.completed.data.reduce(0, +)) / denominator
-        failedPerMinute = Double(metrics.failed.data.reduce(0, +)) / denominator
-        totalPerMinute = completedPerMinute + failedPerMinute
+        let rate = metrics.throughputRate(windowBucketCount: Self.recentWindowBucketCount)
+        completedPerMinute = rate.completedPerMinute
+        failedPerMinute = rate.failedPerMinute
+        totalPerMinute = rate.totalPerMinute
+        bucketCount = rate.bucketCount
     }
 }
 
@@ -2145,12 +2157,6 @@ private extension View {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Color.primary.opacity(0.055))
             }
-    }
-}
-
-private extension BullMQNativeMetrics {
-    var sampleCount: Int {
-        max(completed.data.count, failed.data.count)
     }
 }
 

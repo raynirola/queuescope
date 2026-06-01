@@ -218,6 +218,23 @@ struct BullMQNativeMetrics: Equatable, Codable, Sendable {
     var hasSamples: Bool {
         !completed.data.isEmpty || !failed.data.isEmpty
     }
+
+    var sampleCount: Int {
+        max(completed.data.count, failed.data.count)
+    }
+
+    func throughputRate(windowBucketCount: Int) -> BullMQThroughputRate {
+        let bucketCount = min(sampleCount, max(windowBucketCount, 1))
+        let denominator = Double(max(bucketCount, 1))
+        let completedPerMinute = Double(completed.data.prefix(bucketCount).reduce(0, +)) / denominator
+        let failedPerMinute = Double(failed.data.prefix(bucketCount).reduce(0, +)) / denominator
+
+        return BullMQThroughputRate(
+            completedPerMinute: completedPerMinute,
+            failedPerMinute: failedPerMinute,
+            bucketCount: bucketCount
+        )
+    }
 }
 
 struct BullMQMetricSeries: Equatable, Codable, Sendable {
@@ -225,6 +242,16 @@ struct BullMQMetricSeries: Equatable, Codable, Sendable {
     var previousTimestamp: Date?
     var previousCount: Int
     var data: [Int]
+}
+
+struct BullMQThroughputRate: Equatable, Sendable {
+    var completedPerMinute: Double
+    var failedPerMinute: Double
+    var bucketCount: Int
+
+    var totalPerMinute: Double {
+        completedPerMinute + failedPerMinute
+    }
 }
 
 struct WorkerSummary: Identifiable, Equatable, Sendable {

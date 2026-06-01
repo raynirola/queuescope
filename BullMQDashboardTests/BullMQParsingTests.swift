@@ -84,6 +84,32 @@ final class BullMQParsingTests: XCTestCase {
         XCTAssertEqual(TimeInterval(15_623.95).compactDurationDisplay, "4.3h")
         XCTAssertEqual(TimeInterval(172_800).compactDurationDisplay, "2d")
     }
+
+    func testThroughputRateUsesNewestNativeMetricBuckets() {
+        let metrics = BullMQNativeMetrics(
+            completed: BullMQMetricSeries(count: 1_180, previousTimestamp: nil, previousCount: 0, data: [60, 60, 60, 60, 60, 2, 2, 2, 2, 2]),
+            failed: BullMQMetricSeries(count: 0, previousTimestamp: nil, previousCount: 0, data: [])
+        )
+
+        let rate = metrics.throughputRate(windowBucketCount: 5)
+
+        XCTAssertEqual(rate.bucketCount, 5)
+        XCTAssertEqual(rate.completedPerMinute, 60)
+        XCTAssertEqual(rate.failedPerMinute, 0)
+    }
+
+    func testThroughputRateTreatsMissingSeriesBucketsAsZero() {
+        let metrics = BullMQNativeMetrics(
+            completed: BullMQMetricSeries(count: 10, previousTimestamp: nil, previousCount: 0, data: [10]),
+            failed: BullMQMetricSeries(count: 30, previousTimestamp: nil, previousCount: 0, data: [10, 10, 10])
+        )
+
+        let rate = metrics.throughputRate(windowBucketCount: 3)
+
+        XCTAssertEqual(rate.bucketCount, 3)
+        XCTAssertEqual(rate.completedPerMinute, 10.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(rate.failedPerMinute, 10)
+    }
 }
 
 @MainActor
