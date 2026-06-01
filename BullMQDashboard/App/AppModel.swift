@@ -226,14 +226,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func removeQueue(_ queue: QueueSummary) {
+        removeQueue(named: queue.name)
+    }
+
+    func removeQueue(named queueName: String) {
+        guard queues.contains(where: { $0.name == queueName }) else { return }
+        let queueCacheKey = cacheKey(queueName)
+        queues.removeAll { $0.name == queueName }
+
+        jobsByQuery = jobsByQuery.filter { query, _ in !query.hasPrefix("\(queueCacheKey):runs:") }
+        runTotalsByQuery = runTotalsByQuery.filter { query, _ in !query.hasPrefix("\(queueCacheKey):runs:") }
+        workersByQueue[queueCacheKey] = nil
+        schedulersByQueue[queueCacheKey] = nil
+        metricTimingJobsByQueue[queueCacheKey] = nil
+        lastSnapshotCountsByQueue[queueName] = nil
+        lastSnapshotNativeMetricsByQueue[queueName] = nil
+
+        if selectedQueue?.name == queueName {
+            selectedQueue = queues.first
+            selectedState = nil
+            selectedJob = nil
+            selectedJobDetail = nil
+            jobs = []
+            runPage = 0
+            runTotal = 0
+            workers = []
+            schedulers = []
+            metricTimingJobs = []
+            if let selectedQueue {
+                applyCachedPanelData(for: selectedQueue.name)
+                scheduleRefresh(for: selectedView)
+            }
+        }
+
+        persistCurrentQueueNames()
+        persistCurrentQueueMetadata()
+    }
+
     func assignQueue(_ queue: QueueSummary, toGroup rawGroupName: String?) {
+        assignQueue(named: queue.name, toGroup: rawGroupName)
+    }
+
+    func assignQueue(named queueName: String, toGroup rawGroupName: String?) {
         let groupName = normalizedQueueGroupName(rawGroupName)
-        guard let index = queues.firstIndex(where: { $0.name == queue.name }) else { return }
+        guard let index = queues.firstIndex(where: { $0.name == queueName }) else { return }
         queues[index].groupName = groupName
-        if selectedQueue?.name == queue.name {
+        if selectedQueue?.name == queueName {
             selectedQueue = queues[index]
         }
         persistCurrentQueueMetadata()
+    }
+
+    func assignQueues(named queueNames: [String], toGroup rawGroupName: String?) {
+        let groupName = normalizedQueueGroupName(rawGroupName)
+        let queueNameSet = Set(queueNames)
+        guard !queueNameSet.isEmpty else { return }
+        var changed = false
+        for index in queues.indices where queueNameSet.contains(queues[index].name) {
+            queues[index].groupName = groupName
+            changed = true
+        }
+        if let selectedQueue, queueNameSet.contains(selectedQueue.name),
+           let updatedQueue = queues.first(where: { $0.name == selectedQueue.name }) {
+            self.selectedQueue = updatedQueue
+        }
+        if changed {
+            persistCurrentQueueMetadata()
+        }
     }
 
     func refreshSelectedQueue() async {

@@ -1,13 +1,16 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
     @State private var queueSearch = ""
     @State private var isManualQueuePopoverVisible = false
+    @State private var isGroupManagerVisible = false
     @State private var manualQueueName = ""
     @State private var manualQueueDisplayName = ""
     @State private var queueBeingGrouped: QueueSummary?
     @State private var queueGroupName = ""
+    @State private var collapsedGroupNames: Set<String> = []
     let showConnectionManager: () -> Void
 
     var body: some View {
@@ -37,26 +40,46 @@ struct SidebarView: View {
                     } else {
                         ForEach(groupedQueues) { group in
                             VStack(alignment: .leading, spacing: 4) {
-                                QueueGroupHeader(group: group)
+                                QueueGroupHeader(
+                                    group: group,
+                                    isCollapsed: isCollapsed(group),
+                                    toggle: { toggleGroup(group) },
+                                    ungroup: { model.assignQueues(named: group.queues.map(\.name), toGroup: nil) },
+                                    moveDroppedQueue: { queueName in
+                                        model.assignQueue(named: queueName, toGroup: group.groupNameForAssignment)
+                                    }
+                                )
                                     .padding(.horizontal, 18)
                                     .padding(.top, 8)
                                     .padding(.bottom, 2)
 
-                                ForEach(group.queues) { queue in
-                                    QueueSidebarRow(
-                                        queue: queue,
-                                        isSelected: model.selectedQueue?.name == queue.name,
-                                        editGroup: {
-                                            queueBeingGrouped = queue
-                                            queueGroupName = queue.groupName ?? ""
+                                if !isCollapsed(group) {
+                                    ForEach(group.queues) { queue in
+                                        QueueSidebarRow(
+                                            queue: queue,
+                                            isSelected: model.selectedQueue?.name == queue.name,
+                                            existingGroups: existingGroupNames,
+                                            moveToGroup: { groupName in
+                                                model.assignQueue(queue, toGroup: groupName)
+                                            },
+                                            removeQueue: {
+                                                model.removeQueue(queue)
+                                            },
+                                            editGroup: {
+                                                queueBeingGrouped = queue
+                                                queueGroupName = queue.groupName ?? ""
+                                            }
+                                        )
+                                        .contentShape(RoundedRectangle(cornerRadius: 10))
+                                        .onTapGesture {
+                                            model.selectQueue(queue)
                                         }
-                                    )
-                                    .contentShape(RoundedRectangle(cornerRadius: 10))
-                                    .onTapGesture {
-                                        model.selectQueue(queue)
+                                        .onDrag {
+                                            NSItemProvider(object: queue.name as NSString)
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 3)
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 3)
                                 }
                             }
                         }
@@ -94,6 +117,31 @@ struct SidebarView: View {
             SidebarSectionHeader(title: "Queues")
 
             Spacer()
+
+            Button {
+                isGroupManagerVisible = true
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(model.queues.isEmpty ? .tertiary : .secondary)
+            .disabled(model.queues.isEmpty)
+            .help("Manage groups")
+            .popover(isPresented: $isGroupManagerVisible, arrowEdge: .trailing) {
+                QueueGroupManagementPopover(
+                    queues: model.queues,
+                    existingGroups: existingGroupNames,
+                    createGroup: { queueNames, groupName in
+                        model.assignQueues(named: queueNames, toGroup: groupName)
+                        isGroupManagerVisible = false
+                    },
+                    ungroupQueues: { queueNames in
+                        model.assignQueues(named: queueNames, toGroup: nil)
+                    }
+                )
+            }
 
             Button {
                 isManualQueuePopoverVisible = true
@@ -189,6 +237,21 @@ struct SidebarView: View {
         Array(Set(model.queues.map(\.resolvedGroupName)))
             .filter { $0 != "Ungrouped" }
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private func isCollapsed(_ group: QueueSidebarGroup) -> Bool {
+        if !queueSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        return collapsedGroupNames.contains(group.name)
+    }
+
+    private func toggleGroup(_ group: QueueSidebarGroup) {
+        if collapsedGroupNames.contains(group.name) {
+            collapsedGroupNames.remove(group.name)
+        } else {
+            collapsedGroupNames.insert(group.name)
+        }
     }
 
     private var queueListEmptyState: some View {
@@ -708,24 +771,89 @@ private struct QueueSidebarGroup: Identifiable {
     var id: String { name }
     let name: String
     let queues: [QueueSummary]
+
+    var groupNameForAssignment: String? {
+        name == "Ungrouped" ? nil : name
+    }
 }
 
 private struct QueueGroupHeader: View {
     let group: QueueSidebarGroup
+    let isCollapsed: Bool
+    let toggle: () -> Void
+    let ungroup: () -> Void
+    let moveDroppedQueue: (String) -> Void
+    @State private var isDropTargeted = false
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(group.name)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            Button(action: toggle) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14, height: 18)
+            }
+            .buttonStyle(.plain)
+            .help(isCollapsed ? "Expand group" : "Collapse group")
 
-            Text(group.queues.count.formatted())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(Color.secondary.opacity(0.08), in: Capsule())
+            Button(action: toggle) {
+                HStack(spacing: 6) {
+                    Text(group.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Text(group.queues.count.formatted())
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.08), in: Capsule())
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 4)
+
+            Menu {
+                if group.name != "Ungrouped" {
+                    Button("Ungroup queues") {
+                        ungroup()
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 20, height: 18)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(group.name == "Ungrouped")
+            .opacity(group.name == "Ungrouped" ? 0 : 1)
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 5)
+        .background {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color.accentColor.opacity(0.14))
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 7))
+        .onDrop(of: [.plainText], isTargeted: $isDropTargeted) { providers in
+            guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else {
+                return false
+            }
+            provider.loadObject(ofClass: NSString.self) { item, _ in
+                guard let queueName = item as? NSString else { return }
+                let droppedQueueName = queueName as String
+                Task { @MainActor in
+                    moveDroppedQueue(droppedQueueName)
+                }
+            }
+            return true
         }
     }
 }
@@ -733,6 +861,9 @@ private struct QueueGroupHeader: View {
 private struct QueueSidebarRow: View {
     let queue: QueueSummary
     let isSelected: Bool
+    let existingGroups: [String]
+    let moveToGroup: (String?) -> Void
+    let removeQueue: () -> Void
     let editGroup: () -> Void
 
     var body: some View {
@@ -768,19 +899,40 @@ private struct QueueSidebarRow: View {
 
             Spacer()
 
-            Button(action: editGroup) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.clear)
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(isSelected ? .white.opacity(0.82) : .secondary)
+            Menu {
+                if !existingGroups.isEmpty {
+                    Menu("Move to group") {
+                        ForEach(existingGroups, id: \.self) { group in
+                            Button(group) {
+                                moveToGroup(group)
+                            }
+                        }
+                    }
                 }
-                .frame(width: 34, height: 30)
-                .contentShape(RoundedRectangle(cornerRadius: 6))
+
+                Button("New group…", action: editGroup)
+
+                if queue.groupName != nil {
+                    Divider()
+                    Button("Ungroup") {
+                        moveToGroup(nil)
+                    }
+                }
+
+                Divider()
+
+                Button("Remove from dashboard", role: .destructive, action: removeQueue)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isSelected ? .white.opacity(0.82) : .secondary)
+                    .frame(width: 34, height: 30)
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
             }
-            .buttonStyle(.plain)
-            .help("Move to group")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Queue actions")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
@@ -879,6 +1031,137 @@ private struct QueueGroupPopover: View {
 
     private func saveGroup() {
         save(groupName)
+    }
+}
+
+private struct QueueGroupManagementPopover: View {
+    let queues: [QueueSummary]
+    let existingGroups: [String]
+    let createGroup: ([String], String) -> Void
+    let ungroupQueues: ([String]) -> Void
+    @State private var groupName = ""
+    @State private var selectedQueueNames: Set<String> = []
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Groups")
+                    .font(.headline)
+                Text("Create groups from existing queues or clear a group.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("New group")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("Production", text: $groupName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .onSubmit(createIfValid)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Queues")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { queue in
+                            Toggle(isOn: binding(for: queue.name)) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(queue.resolvedDisplayName)
+                                        .font(.caption.weight(.medium))
+                                        .lineLimit(1)
+                                    Text(queue.resolvedGroupName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 150)
+            }
+
+            if !existingGroups.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Existing groups")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(existingGroups, id: \.self) { group in
+                            HStack(spacing: 8) {
+                                Button(group) {
+                                    groupName = group
+                                    selectedQueueNames = Set(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+
+                                Spacer()
+
+                                Button("Clear") {
+                                    ungroupQueues(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Button("Reset") {
+                    groupName = ""
+                    selectedQueueNames = []
+                }
+                .buttonStyle(.borderless)
+
+                Spacer()
+
+                Button("Create", action: createIfValid)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedQueueNames.isEmpty)
+            }
+        }
+        .padding(14)
+        .frame(width: 330)
+        .onAppear {
+            isFocused = true
+            if selectedQueueNames.isEmpty, let firstUngrouped = queues.first(where: { $0.groupName == nil }) {
+                selectedQueueNames = [firstUngrouped.name]
+            }
+        }
+    }
+
+    private func binding(for queueName: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedQueueNames.contains(queueName) },
+            set: { isSelected in
+                if isSelected {
+                    selectedQueueNames.insert(queueName)
+                } else {
+                    selectedQueueNames.remove(queueName)
+                }
+            }
+        )
+    }
+
+    private func createIfValid() {
+        let trimmedGroupName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedGroupName.isEmpty, !selectedQueueNames.isEmpty else { return }
+        createGroup(Array(selectedQueueNames), trimmedGroupName)
     }
 }
 
