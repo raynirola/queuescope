@@ -48,6 +48,22 @@ final class RedisURLParserTests: XCTestCase {
         XCTAssertEqual(store.load(scope: "missing"), [])
     }
 
+    func testConnectionProfileStorePersistsLastActiveProfileID() {
+        let suiteName = "ConnectionProfileStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = ConnectionProfileStore(defaults: defaults)
+        let profileID = UUID()
+
+        XCTAssertNil(store.loadLastActiveProfileID())
+
+        store.saveLastActiveProfileID(profileID)
+        XCTAssertEqual(store.loadLastActiveProfileID(), profileID)
+
+        store.clearLastActiveProfileID()
+        XCTAssertNil(store.loadLastActiveProfileID())
+    }
+
     func testQueueMetadataStorePersistsQueueOverviewsByScope() {
         let suiteName = "QueueMetadataStoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -75,5 +91,26 @@ final class RedisURLParserTests: XCTestCase {
         XCTAssertEqual(store.load(scope: "local:6379/0:bull").first?.counts.waiting, 8)
         XCTAssertEqual(store.load(scope: "local:6379/0:bull").first?.health, .warning)
         XCTAssertEqual(store.load(scope: "missing"), [])
+    }
+
+    func testQueueWorkspacePreferenceStorePersistsSelectionByScope() {
+        let suiteName = "QueueWorkspacePreferenceStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = QueueWorkspacePreferenceStore(defaults: defaults)
+
+        store.save(
+            QueueWorkspacePreference(selectedQueueName: "email", selectedView: "runs"),
+            scope: "local:6379/0:bull"
+        )
+        store.save(
+            QueueWorkspacePreference(selectedQueueName: "reports", selectedView: "metrics"),
+            scope: "prod:6379/0:bull"
+        )
+
+        XCTAssertEqual(store.load(scope: "local:6379/0:bull")?.selectedQueueName, "email")
+        XCTAssertEqual(store.load(scope: "local:6379/0:bull")?.selectedView, "runs")
+        XCTAssertEqual(store.load(scope: "prod:6379/0:bull")?.selectedQueueName, "reports")
+        XCTAssertNil(store.load(scope: "missing"))
     }
 }

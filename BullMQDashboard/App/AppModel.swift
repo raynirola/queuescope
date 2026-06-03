@@ -48,6 +48,7 @@ final class AppModel: ObservableObject {
     private let snapshotStore: MetricSnapshotStore
     private let queueNameStore: QueueNameStore
     private let queueMetadataStore: QueueMetadataStore
+    private let workspacePreferenceStore: QueueWorkspacePreferenceStore
     private var config: RedisConnectionConfig?
     private let runPageSize = 10
     private var refreshRequestID = 0
@@ -71,7 +72,8 @@ final class AppModel: ObservableObject {
         credentialStore: KeychainCredentialStore = KeychainCredentialStore(),
         snapshotStore: MetricSnapshotStore = MetricSnapshotStore(),
         queueNameStore: QueueNameStore = QueueNameStore(),
-        queueMetadataStore: QueueMetadataStore = QueueMetadataStore()
+        queueMetadataStore: QueueMetadataStore = QueueMetadataStore(),
+        workspacePreferenceStore: QueueWorkspacePreferenceStore = QueueWorkspacePreferenceStore()
     ) {
         self.engine = engine
         self.profileStore = profileStore
@@ -79,6 +81,7 @@ final class AppModel: ObservableObject {
         self.snapshotStore = snapshotStore
         self.queueNameStore = queueNameStore
         self.queueMetadataStore = queueMetadataStore
+        self.workspacePreferenceStore = workspacePreferenceStore
         self.profiles = profileStore.load()
         self.snapshots = snapshotStore.load()
     }
@@ -180,15 +183,32 @@ final class AppModel: ObservableObject {
             connectionProfileName = profile.name
             connectionProfileTag = profile.tag
             await connect()
+            if isConnected {
+                profileStore.saveLastActiveProfileID(profile.id)
+            }
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    func connectToLastActiveProfileIfAvailable() async -> Bool {
+        guard !isConnected, let profile = lastActiveProfile() else { return false }
+        statusMessage = "Connecting to \(profile.name)…"
+        await connect(profile: profile)
+        return isConnected
     }
 
     func deleteProfile(_ profile: RedisConnectionProfile) {
         profiles.removeAll { $0.id == profile.id }
         credentialStore.delete(for: profile.id)
         profileStore.save(profiles)
+        if profileStore.loadLastActiveProfileID() == profile.id {
+            if let replacementProfile = profiles.last {
+                profileStore.saveLastActiveProfileID(replacementProfile.id)
+            } else {
+                profileStore.clearLastActiveProfileID()
+            }
+        }
     }
 
     func selectQueue(_ queue: QueueSummary) {
@@ -197,6 +217,7 @@ final class AppModel: ObservableObject {
         resetSelectedJob()
         runPage = 0
         applyCachedPanelData(for: queue.name)
+        persistCurrentWorkspacePreference()
         scheduleRefresh(for: selectedView)
     }
 
@@ -208,6 +229,7 @@ final class AppModel: ObservableObject {
         } else if let selectedQueue {
             applyCachedPanelData(for: selectedQueue.name)
         }
+        persistCurrentWorkspacePreference()
         scheduleRefresh(for: view)
     }
 
@@ -232,6 +254,7 @@ final class AppModel: ObservableObject {
             runPage = 0
             persistCurrentQueueNames()
             persistCurrentQueueMetadata()
+            persistCurrentWorkspacePreference()
             applyCachedPanelData(for: name)
             scheduleRefresh(for: selectedView)
         }
@@ -268,6 +291,7 @@ final class AppModel: ObservableObject {
                 applyCachedPanelData(for: selectedQueue.name)
                 scheduleRefresh(for: selectedView)
             }
+            persistCurrentWorkspacePreference()
         }
 
         persistCurrentQueueNames()
@@ -325,6 +349,7 @@ final class AppModel: ObservableObject {
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         }
+        persistCurrentWorkspacePreference()
         scheduleRefresh(for: .runs)
     }
 
@@ -536,7 +561,10 @@ final class AppModel: ObservableObject {
             )
             try Task.checkCancellation()
             guard self.selectedJob?.id == jobID else { return }
-            selectedJobLogs = mergeLogs(selectedJobLogs, with: logs)
+            let mergedLogs = mergeLogs(selectedJobLogs, with: logs)
+            if mergedLogs != selectedJobLogs {
+                selectedJobLogs = mergedLogs
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -562,7 +590,10 @@ final class AppModel: ObservableObject {
             )
             try Task.checkCancellation()
             guard self.selectedJob?.id == jobID else { return }
-            selectedJobLogs = mergeLogs(selectedJobLogs, with: logs)
+            let mergedLogs = mergeLogs(selectedJobLogs, with: logs)
+            if mergedLogs != selectedJobLogs {
+                selectedJobLogs = mergedLogs
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -572,10 +603,21 @@ final class AppModel: ObservableObject {
     }
 
     private func mergeLogs(_ current: JobLogs, with incoming: JobLogs) -> JobLogs {
-        let entriesByID = Dictionary(uniqueKeysWithValues: (current.entries + incoming.entries).map { ($0.id, $0) })
+        Self.mergedLogs(current, with: incoming)
+    }
+
+    static func mergedLogs(_ current: JobLogs, with incoming: JobLogs) -> JobLogs {
+        var entriesByID: [Int: JobLogEntry] = [:]
+        for entry in current.entries {
+            entriesByID[entry.id] = entry
+        }
+        for entry in incoming.entries {
+            entriesByID[entry.id] = entry
+        }
+
         return JobLogs(
             entries: entriesByID.values.sorted { $0.id < $1.id },
-            total: incoming.total
+            total: max(current.total, incoming.total)
         )
     }
 
@@ -630,6 +672,12 @@ final class AppModel: ObservableObject {
 
     private func loadSavedQueues(for config: RedisConnectionConfig) {
         let scope = queueScope(for: config)
+        let preference = workspacePreferenceStore.load(scope: scope)
+        if let rawSelectedView = preference?.selectedView,
+           let restoredView = QueueWorkspaceView(rawValue: rawSelectedView) {
+            selectedView = restoredView
+        }
+
         let cachedQueues = queueMetadataStore.load(scope: scope)
         let names = queueNameStore.load(scope: scope)
         guard !cachedQueues.isEmpty || !names.isEmpty else { return }
@@ -640,7 +688,11 @@ final class AppModel: ObservableObject {
         } else {
             queues = cachedQueues
         }
-        if selectedQueue == nil {
+        if let selectedQueueName = preference?.selectedQueueName,
+           let restoredQueue = queues.first(where: { $0.name == selectedQueueName }) {
+            selectedQueue = restoredQueue
+            selectedState = nil
+        } else if selectedQueue == nil {
             selectedQueue = queues.first
             selectedState = nil
         }
@@ -648,6 +700,14 @@ final class AppModel: ObservableObject {
             applyCachedPanelData(for: selectedQueue.name)
         }
         statusMessage = "Loaded \(queues.count) cached queues"
+    }
+
+    private func lastActiveProfile() -> RedisConnectionProfile? {
+        if let id = profileStore.loadLastActiveProfileID(),
+           let profile = profiles.first(where: { $0.id == id }) {
+            return profile
+        }
+        return profiles.last
     }
 
     private func resetQueueStateForNewConnection() {
@@ -663,6 +723,7 @@ final class AppModel: ObservableObject {
         workers = []
         schedulers = []
         metricTimingJobs = []
+        selectedView = .overview
         selectedQueue = nil
         selectedState = nil
         selectedJob = nil
@@ -687,6 +748,15 @@ final class AppModel: ObservableObject {
     private func persistCurrentQueueMetadata() {
         guard let config else { return }
         queueMetadataStore.save(queues, scope: queueScope(for: config))
+    }
+
+    private func persistCurrentWorkspacePreference() {
+        guard let config else { return }
+        let preference = QueueWorkspacePreference(
+            selectedQueueName: selectedQueue?.name,
+            selectedView: selectedView.rawValue
+        )
+        workspacePreferenceStore.save(preference, scope: queueScope(for: config))
     }
 
     private func queueScope(for config: RedisConnectionConfig) -> String {

@@ -45,7 +45,7 @@ struct QueueDashboardView: View {
     var body: some View {
         Group {
             if let queue = model.selectedQueue {
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         header(queue)
                         content(for: queue)

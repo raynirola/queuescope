@@ -43,10 +43,13 @@ struct DashboardRootView: View {
             ConnectionManagerView()
                 .environmentObject(model)
         }
-        .onAppear {
-            guard !didPresentInitialConnectionManager, (!model.isConnected || model.profiles.isEmpty) else { return }
+        .task {
+            guard !didPresentInitialConnectionManager, !model.isConnected else { return }
             didPresentInitialConnectionManager = true
-            isConnectionManagerVisible = true
+            let didConnect = await model.connectToLastActiveProfileIfAvailable()
+            if !didConnect, !model.isConnected {
+                isConnectionManagerVisible = true
+            }
         }
         .onChange(of: model.selectedJobDetail?.id) { _, id in
             isInspectorVisible = id != nil
@@ -89,7 +92,7 @@ struct DashboardRootView: View {
     private var inspectorDrawer: some View {
         if isInspectorVisible, model.selectedJobDetail != nil {
             JobInspectorView()
-                .frame(width: 400)
+                .frame(width: 520)
                 .frame(maxHeight: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .shadow(color: .black.opacity(0.18), radius: 22, x: -8, y: 0)

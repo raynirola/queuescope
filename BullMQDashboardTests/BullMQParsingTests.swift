@@ -272,6 +272,30 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertEqual(model.selectedJobLogs.entries.first?.text, "line 1")
         XCTAssertEqual(model.selectedJobLogs.entries.last?.text, "line 60")
     }
+
+    func testMergingOverlappingLogWindowsDeduplicatesIDs() {
+        let current = JobLogs(
+            entries: [
+                JobLogEntry(id: 1, text: "first"),
+                JobLogEntry(id: 2, text: "second")
+            ],
+            total: 2
+        )
+        let incoming = JobLogs(
+            entries: [
+                JobLogEntry(id: 2, text: "second updated"),
+                JobLogEntry(id: 2, text: "second latest"),
+                JobLogEntry(id: 3, text: "third")
+            ],
+            total: 3
+        )
+
+        let merged = AppModel.mergedLogs(current, with: incoming)
+
+        XCTAssertEqual(merged.entries.map(\.id), [1, 2, 3])
+        XCTAssertEqual(merged.entries.map(\.text), ["first", "second latest", "third"])
+        XCTAssertEqual(merged.total, 3)
+    }
 }
 
 private func makeJob(id: String, queueName: String, state: BullMQState) -> JobSummary {

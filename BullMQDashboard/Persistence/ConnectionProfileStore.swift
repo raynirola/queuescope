@@ -2,6 +2,7 @@ import Foundation
 
 final class ConnectionProfileStore {
     private let key = "redis.connection.profiles"
+    private let lastActiveProfileIDKey = "redis.connection.lastActiveProfileID"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -16,6 +17,19 @@ final class ConnectionProfileStore {
     func save(_ profiles: [RedisConnectionProfile]) {
         guard let data = try? JSONEncoder().encode(profiles) else { return }
         defaults.set(data, forKey: key)
+    }
+
+    func loadLastActiveProfileID() -> UUID? {
+        guard let rawID = defaults.string(forKey: lastActiveProfileIDKey) else { return nil }
+        return UUID(uuidString: rawID)
+    }
+
+    func saveLastActiveProfileID(_ id: UUID) {
+        defaults.set(id.uuidString, forKey: lastActiveProfileIDKey)
+    }
+
+    func clearLastActiveProfileID() {
+        defaults.removeObject(forKey: lastActiveProfileIDKey)
     }
 }
 
@@ -66,5 +80,35 @@ final class QueueMetadataStore {
     private func storedQueues() -> [String: [QueueSummary]] {
         guard let data = defaults.data(forKey: key) else { return [:] }
         return (try? JSONDecoder().decode([String: [QueueSummary]].self, from: data)) ?? [:]
+    }
+}
+
+struct QueueWorkspacePreference: Codable, Equatable {
+    var selectedQueueName: String?
+    var selectedView: String
+}
+
+final class QueueWorkspacePreferenceStore {
+    private let key = "redis.connection.workspace.preference"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load(scope: String) -> QueueWorkspacePreference? {
+        storedPreferences()[scope]
+    }
+
+    func save(_ preference: QueueWorkspacePreference, scope: String) {
+        var stored = storedPreferences()
+        stored[scope] = preference
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    private func storedPreferences() -> [String: QueueWorkspacePreference] {
+        guard let data = defaults.data(forKey: key) else { return [:] }
+        return (try? JSONDecoder().decode([String: QueueWorkspacePreference].self, from: data)) ?? [:]
     }
 }
