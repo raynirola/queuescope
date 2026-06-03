@@ -781,8 +781,26 @@ private struct InspectorCodeBlock<Content: View>: View {
 
 @MainActor
 private func appWindowContentSize() -> CGSize? {
-    let window = NSApp.mainWindow ?? NSApp.keyWindow
-    return window?.contentView?.bounds.size
+    let candidateWindows = NSApp.windows.filter { window in
+        window.isVisible && !window.isSheet && window.contentView != nil
+    }
+    let window = candidateWindows.max { left, right in
+        left.frame.width * left.frame.height < right.frame.width * right.frame.height
+    } ?? NSApp.mainWindow ?? NSApp.keyWindow
+
+    guard let window else {
+        return NSScreen.main?.visibleFrame.size
+    }
+
+    let contentSize = window.contentView?.bounds.size ?? .zero
+    if contentSize.width > 0, contentSize.height > 0 {
+        return CGSize(
+            width: max(contentSize.width, window.frame.width),
+            height: max(contentSize.height, window.frame.height)
+        )
+    }
+
+    return window.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size
 }
 
 private func inspectorFullViewSize(for contentSize: CGSize) -> CGSize {
