@@ -192,6 +192,22 @@ struct JobDetail: Identifiable, Equatable, Sendable {
     var attemptsMade: Int
 }
 
+struct JobLogs: Equatable, Sendable {
+    var entries: [JobLogEntry]
+    var total: Int
+
+    static let empty = JobLogs(entries: [], total: 0)
+
+    var isTruncated: Bool {
+        total > entries.count
+    }
+}
+
+struct JobLogEntry: Identifiable, Equatable, Sendable {
+    var id: Int
+    var text: String
+}
+
 struct QueueMetricSnapshot: Identifiable, Equatable, Codable, Sendable {
     var id = UUID()
     var queueName: String

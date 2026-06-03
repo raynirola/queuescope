@@ -1880,19 +1880,31 @@ private struct SchedulersPanel: View {
 
         let nextRun = scheduler.nextRun ?? keyParts.reversed().compactMap(dateFromMilliseconds).first
         let title = keyParts.first(where: { !isMilliseconds($0) }) ?? scheduler.name
-        let cadence = cadenceText(from: title)
+        let repeatDescription = repeatDescription(from: scheduler.raw, keyParts: keyParts)
+        let cadence = cadenceText(from: title, repeatDescription: repeatDescription)
+        let repeatOptions = repeatOptionsText(from: scheduler.raw)
 
         return SchedulerDisplayItem(
             id: scheduler.id,
             title: title.titleCasedQueueName,
             rawTitle: title,
             cadence: cadence,
+            repeatDescription: repeatDescription,
+            repeatOptions: repeatOptions,
             nextRun: nextRun,
             rawKey: rawKey
         )
     }
 
-    private func cadenceText(from rawTitle: String) -> String {
+    private func cadenceText(from rawTitle: String, repeatDescription: String) -> String {
+        if repeatDescription.hasPrefix("Every ") {
+            return repeatDescription.components(separatedBy: " (").first ?? repeatDescription
+        }
+
+        if repeatDescription.hasPrefix("Cron:") || repeatDescription.contains(" * ") {
+            return "Cron"
+        }
+
         if rawTitle.hasPrefix("every-") {
             let value = rawTitle
                 .replacingOccurrences(of: "every-", with: "")
@@ -1910,6 +1922,141 @@ private struct SchedulersPanel: View {
         }
 
         return "Repeatable"
+    }
+
+    private func repeatDescription(from raw: [String: String], keyParts: ArraySlice<String>) -> String {
+        if let every = raw["every"], let milliseconds = Double(every) {
+            return everyText(milliseconds: milliseconds)
+        }
+
+        if let pattern = raw["pattern"], !pattern.isEmpty {
+            return cronText(pattern: pattern, timeZone: raw["tz"])
+        }
+
+        let keyData = repeatKeyData(from: keyParts)
+        if let milliseconds = keyData.every {
+            return everyText(milliseconds: milliseconds)
+        }
+        if let pattern = keyData.pattern {
+            return cronText(pattern: pattern, timeZone: keyData.timeZone)
+        }
+
+        return "Repeatable"
+    }
+
+    private func repeatOptionsText(from raw: [String: String]) -> String? {
+        var values: [String] = []
+        if let limit = raw["limit"], !limit.isEmpty {
+            values.append("limit \(limit)")
+        }
+        if let timeZone = raw["tz"], !timeZone.isEmpty {
+            values.append("timezone \(timeZone)")
+        }
+        if let startDate = raw["startDate"].flatMap(dateFromMilliseconds) {
+            values.append("starts \(startDate.formatted(date: .abbreviated, time: .shortened))")
+        }
+        if let endDate = raw["endDate"].flatMap(dateFromMilliseconds) {
+            values.append("ends \(endDate.formatted(date: .abbreviated, time: .shortened))")
+        }
+        return values.isEmpty ? nil : values.joined(separator: " · ")
+    }
+
+    private func repeatKeyData(from keyParts: ArraySlice<String>) -> (every: Double?, pattern: String?, timeZone: String?) {
+        let parts = Array(keyParts)
+        guard parts.count >= 5 else {
+            return (nil, nil, nil)
+        }
+
+        let suffix = parts.dropFirst(4).joined(separator: ":")
+        if let milliseconds = Double(suffix) {
+            return (milliseconds, nil, parts[3].isEmpty ? nil : parts[3])
+        }
+        return (nil, suffix.isEmpty ? nil : suffix, parts[3].isEmpty ? nil : parts[3])
+    }
+
+    private func everyText(milliseconds: Double) -> String {
+        let seconds = milliseconds / 1000
+        let units: [(name: String, seconds: Double)] = [
+            ("day", 86_400),
+            ("hour", 3_600),
+            ("minute", 60),
+            ("second", 1)
+        ]
+
+        for unit in units where seconds >= unit.seconds {
+            let value = seconds / unit.seconds
+            if value.rounded() == value {
+                let count = Int(value)
+                let label = count == 1 ? unit.name : "\(unit.name)s"
+                return "Every \(count) \(label)"
+            }
+        }
+
+        return "Every \(Int(milliseconds)) ms"
+    }
+
+    private func cronText(pattern: String, timeZone: String?) -> String {
+        let readable = readableCronText(pattern)
+        let timeZoneText = timeZone.flatMap { $0.isEmpty ? nil : " in \($0)" } ?? ""
+        if let readable {
+            return "\(readable)\(timeZoneText) (\(pattern))"
+        }
+        return "Cron: \(pattern)\(timeZoneText)"
+    }
+
+    private func readableCronText(_ pattern: String) -> String? {
+        let fields = pattern.split(separator: " ").map(String.init)
+        let cronFields: [String]
+        if fields.count == 6, fields[0] == "0" {
+            cronFields = Array(fields.dropFirst())
+        } else if fields.count == 5 {
+            cronFields = fields
+        } else {
+            return nil
+        }
+
+        let minute = cronFields[0]
+        let hour = cronFields[1]
+        let dayOfMonth = cronFields[2]
+        let month = cronFields[3]
+        let dayOfWeek = cronFields[4]
+
+        if minute == "*", hour == "*", dayOfMonth == "*", month == "*", dayOfWeek == "*" {
+            return "Every minute"
+        }
+
+        if minute.hasPrefix("*/"),
+           hour == "*",
+           dayOfMonth == "*",
+           month == "*",
+           dayOfWeek == "*",
+           let value = minute.split(separator: "/").last {
+            return "Every \(value) minutes"
+        }
+
+        if let minuteValue = Int(minute),
+           hour == "*",
+           dayOfMonth == "*",
+           month == "*",
+           dayOfWeek == "*" {
+            return "Hourly at :\(String(format: "%02d", minuteValue))"
+        }
+
+        if let minuteValue = Int(minute),
+           let hourValue = Int(hour),
+           dayOfMonth == "*",
+           month == "*",
+           dayOfWeek == "*" {
+            return "Every day at \(timeText(hour: hourValue, minute: minuteValue))"
+        }
+
+        return nil
+    }
+
+    private func timeText(hour: Int, minute: Int) -> String {
+        let suffix = hour >= 12 ? "PM" : "AM"
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        return "\(displayHour):\(String(format: "%02d", minute)) \(suffix)"
     }
 
     private func dateFromMilliseconds(_ value: String) -> Date? {
@@ -1943,6 +2090,8 @@ private struct SchedulerDisplayItem: Identifiable {
     let title: String
     let rawTitle: String
     let cadence: String
+    let repeatDescription: String
+    let repeatOptions: String?
     let nextRun: Date?
     let rawKey: String
 }
@@ -1968,6 +2117,12 @@ private struct SchedulerDetailSection: View {
 
             VStack(spacing: 0) {
                 SchedulerDetailRow(icon: icon, tint: tint, label: "Next run", value: nextRunText)
+                Divider().padding(.leading, 56)
+                SchedulerDetailRow(icon: "arrow.triangle.2.circlepath", tint: tint, label: "Repeat", value: schedule.repeatDescription)
+                if let repeatOptions = schedule.repeatOptions {
+                    Divider().padding(.leading, 56)
+                    SchedulerDetailRow(icon: "slider.horizontal.3", tint: .gray, label: "Options", value: repeatOptions)
+                }
                 Divider().padding(.leading, 56)
                 SchedulerDetailRow(icon: "number", tint: .gray, label: "Job key", value: schedule.rawTitle, isMonospaced: true)
                 Divider().padding(.leading, 56)
@@ -2039,7 +2194,7 @@ private struct SchedulerDetailRow: View {
                 .font(isMonospaced ? .callout.monospaced() : .callout)
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
-                .lineLimit(1)
+                .lineLimit(isMonospaced ? 1 : 2)
 
             Spacer(minLength: 0)
         }
@@ -2078,6 +2233,11 @@ private struct SchedulerRow: View {
 
                 Text(schedule.rawTitle)
                     .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(schedule.repeatDescription)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

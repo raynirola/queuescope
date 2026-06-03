@@ -111,7 +111,8 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func getJobDetail(queueName: String, prefix: String, jobID: String, state: BullMQState) async throws -> JobDetail {
-        let fields = try await hgetall(BullMQParsing.jobKey(prefix: prefix, queue: queueName, jobID: jobID))
+        let jobKey = BullMQParsing.jobKey(prefix: prefix, queue: queueName, jobID: jobID)
+        let fields = try await hgetall(jobKey)
         return JobDetail(
             id: jobID,
             queueName: queueName,
@@ -128,6 +129,27 @@ actor BullMQRedisEngine: BullMQEngine {
             finishedOn: BullMQParsing.dateFromMilliseconds(fields["finishedOn"]),
             attemptsMade: BullMQParsing.int(fields["atm"] ?? fields["attemptsMade"])
         )
+    }
+
+    func getJobLogs(queueName: String, prefix: String, jobID: String, start: Int?, limit: Int) async throws -> JobLogs {
+        let cappedLimit = max(1, limit)
+        let logsKey = "\(BullMQParsing.jobKey(prefix: prefix, queue: queueName, jobID: jobID)):logs"
+        let totalResponse = try await command(["LLEN", logsKey])
+        let total = totalResponse.int ?? 0
+        guard total > 0 else { return .empty }
+
+        let lowerBound: Int
+        let upperBound: Int
+        if let start {
+            lowerBound = max(0, min(start, total - 1))
+            upperBound = min(total - 1, lowerBound + cappedLimit - 1)
+        } else {
+            lowerBound = max(0, total - cappedLimit)
+            upperBound = total - 1
+        }
+
+        let response = try await command(["LRANGE", logsKey, String(lowerBound), String(upperBound)])
+        return makeJobLogs(total: total, startIndex: lowerBound, response: response)
     }
 
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {
@@ -229,10 +251,14 @@ actor BullMQRedisEngine: BullMQEngine {
 
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary] {
         let repeatKey = BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "repeat")
+        let repeatSetResponse = try await command(["ZRANGE", repeatKey, "0", "-1", "WITHSCORES"])
+        let repeatMembers = repeatMembers(from: repeatSetResponse)
+        let repeatMetadata = try await repeatMetadataByMember(repeatMembers, repeatKey: repeatKey)
         let repeatSchedulers = schedulerSummariesFromRepeatSet(
-            try await command(["ZRANGE", repeatKey, "0", "-1", "WITHSCORES"]),
+            repeatSetResponse,
             queueName: queueName,
-            repeatKey: repeatKey
+            repeatKey: repeatKey,
+            metadataByMember: repeatMetadata
         )
         if !repeatSchedulers.isEmpty {
             return repeatSchedulers
@@ -245,27 +271,33 @@ actor BullMQRedisEngine: BullMQEngine {
             perStateLimit: 25,
             totalLimit: 100
         )
-        return schedulerSummariesFromRepeatJobs(repeatJobs, queueName: queueName, repeatKey: repeatKey)
+        return try await schedulerSummariesFromRepeatJobs(repeatJobs, queueName: queueName, repeatKey: repeatKey)
     }
 
-    private func schedulerSummariesFromRepeatSet(_ response: RESPValue, queueName: String, repeatKey: String) -> [SchedulerSummary] {
+    private func schedulerSummariesFromRepeatSet(
+        _ response: RESPValue,
+        queueName: String,
+        repeatKey: String,
+        metadataByMember: [String: [String: String]]
+    ) -> [SchedulerSummary] {
         let values = arrayStrings(response)
         var schedulers: [SchedulerSummary] = []
         var index = 0
         while index < values.count {
             let repeatMember = values[index]
             let score = index + 1 < values.count ? values[index + 1] : nil
+            let metadata = metadataByMember[repeatMember] ?? [:]
             schedulers.append(
                 SchedulerSummary(
                     id: "\(repeatKey):\(repeatMember)",
                     queueName: queueName,
-                    name: schedulerName(fromRepeatMember: repeatMember),
+                    name: schedulerName(fromRepeatMember: repeatMember, metadata: metadata),
                     nextRun: BullMQParsing.dateFromMilliseconds(score),
-                    raw: [
+                    raw: schedulerRawFields(metadata: metadata, base: [
                         "key": "\(repeatKey):\(repeatMember)",
                         "repeatKey": repeatMember,
                         "source": "repeat-set"
-                    ]
+                    ])
                 )
             )
             index += 2
@@ -273,8 +305,9 @@ actor BullMQRedisEngine: BullMQEngine {
         return schedulers
     }
 
-    private func schedulerSummariesFromRepeatJobs(_ jobs: [JobSummary], queueName: String, repeatKey: String) -> [SchedulerSummary] {
+    private func schedulerSummariesFromRepeatJobs(_ jobs: [JobSummary], queueName: String, repeatKey: String) async throws -> [SchedulerSummary] {
         var schedulersByKey: [String: SchedulerSummary] = [:]
+        var metadataByMember: [String: [String: String]] = [:]
 
         for job in jobs where job.id.hasPrefix("repeat:") {
             let parts = job.id.components(separatedBy: ":")
@@ -283,6 +316,13 @@ actor BullMQRedisEngine: BullMQEngine {
             let repeatMember = parts.dropFirst().dropLast().joined(separator: ":")
             guard !repeatMember.isEmpty else { continue }
             let id = "\(repeatKey):\(repeatMember)"
+            let metadata: [String: String]
+            if let cachedMetadata = metadataByMember[repeatMember] {
+                metadata = cachedMetadata
+            } else {
+                metadata = try await hgetall("\(repeatKey):\(repeatMember)")
+                metadataByMember[repeatMember] = metadata
+            }
 
             if let existing = schedulersByKey[id],
                let existingRun = existing.nextRun,
@@ -294,20 +334,56 @@ actor BullMQRedisEngine: BullMQEngine {
             schedulersByKey[id] = SchedulerSummary(
                 id: id,
                 queueName: queueName,
-                name: schedulerName(fromRepeatMember: repeatMember),
+                name: schedulerName(fromRepeatMember: repeatMember, metadata: metadata),
                 nextRun: job.delayedUntil ?? BullMQParsing.dateFromMilliseconds(timestamp),
-                raw: [
+                raw: schedulerRawFields(metadata: metadata, base: [
                     "key": "\(repeatKey):\(repeatMember):\(timestamp ?? "")",
                     "repeatKey": repeatMember,
                     "source": "repeat-job"
-                ]
+                ])
             )
         }
         return schedulersByKey.values.sorted { $0.name < $1.name }
     }
 
-    private func schedulerName(fromRepeatMember repeatMember: String) -> String {
-        repeatMember
+    private func repeatMembers(from response: RESPValue) -> [String] {
+        let values = arrayStrings(response)
+        var members: [String] = []
+        var index = 0
+        while index < values.count {
+            members.append(values[index])
+            index += 2
+        }
+        return members
+    }
+
+    private func repeatMetadataByMember(_ members: [String], repeatKey: String) async throws -> [String: [String: String]] {
+        guard !members.isEmpty else { return [:] }
+        let responses = try await commands(members.map { ["HGETALL", "\(repeatKey):\($0)"] })
+        var metadataByMember: [String: [String: String]] = [:]
+        for (index, member) in members.enumerated() {
+            let fields = hgetallFields(responses[safe: index] ?? .array([]))
+            if !fields.isEmpty {
+                metadataByMember[member] = fields
+            }
+        }
+        return metadataByMember
+    }
+
+    private func schedulerRawFields(metadata: [String: String], base: [String: String]) -> [String: String] {
+        var raw = base
+        for (key, value) in metadata {
+            raw[key] = value
+        }
+        return raw
+    }
+
+    private func schedulerName(fromRepeatMember repeatMember: String, metadata: [String: String]) -> String {
+        if let name = metadata["name"], !name.isEmpty {
+            return name
+        }
+
+        return repeatMember
             .components(separatedBy: ":")
             .first(where: { !$0.isEmpty && !isMilliseconds($0) }) ?? repeatMember
     }
@@ -458,6 +534,14 @@ actor BullMQRedisEngine: BullMQEngine {
             index += 2
         }
         return fields
+    }
+
+    private func makeJobLogs(total: Int, startIndex: Int, response: RESPValue) -> JobLogs {
+        let lines = arrayStrings(response)
+        let entries = lines.enumerated().map { offset, line in
+            JobLogEntry(id: startIndex + offset + 1, text: line)
+        }
+        return JobLogs(entries: entries, total: total)
     }
 
     private func command(_ parts: [String]) async throws -> RESPValue {

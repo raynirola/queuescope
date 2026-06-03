@@ -26,6 +26,9 @@ final class AppModel: ObservableObject {
     @Published var runTotal = 0
     @Published var selectedJob: JobSummary?
     @Published var selectedJobDetail: JobDetail?
+    @Published var selectedJobLogs: JobLogs = .empty
+    @Published var isLoadingSelectedJobLogs = false
+    @Published var isStreamingSelectedJobLogs = false
     @Published var workers: [WorkerSummary] = []
     @Published var schedulers: [SchedulerSummary] = []
     @Published var metricTimingJobs: [JobSummary] = []
@@ -55,8 +58,12 @@ final class AppModel: ObservableObject {
     private var metricTimingJobsByQueue: [String: [JobSummary]] = [:]
     private var loadingPhaseCounts: [LoadingPhase: Int] = [:]
     private var refreshTask: Task<Void, Never>?
+    private var selectedJobDetailTask: Task<Void, Never>?
+    private var selectedJobLogTask: Task<Void, Never>?
     private var lastSnapshotCountsByQueue: [String: QueueCounts] = [:]
     private var lastSnapshotNativeMetricsByQueue: [String: BullMQNativeMetrics] = [:]
+    private let activeJobLogRefreshInterval: UInt64 = 2_000_000_000
+    private let jobLogPageSize = 50
 
     init(
         engine: BullMQEngine = BullMQRedisEngine(),
@@ -116,6 +123,10 @@ final class AppModel: ObservableObject {
         refreshRequestID += 1
         refreshTask?.cancel()
         refreshTask = nil
+        selectedJobDetailTask?.cancel()
+        selectedJobDetailTask = nil
+        selectedJobLogTask?.cancel()
+        selectedJobLogTask = nil
         await engine.disconnect()
         isConnected = false
         statusMessage = "Not connected"
@@ -127,6 +138,9 @@ final class AppModel: ObservableObject {
         selectedQueue = nil
         selectedJob = nil
         selectedJobDetail = nil
+        selectedJobLogs = .empty
+        isLoadingSelectedJobLogs = false
+        isStreamingSelectedJobLogs = false
         activeLoadingPhases = []
         jobsByQuery = [:]
         runTotalsByQuery = [:]
@@ -180,8 +194,7 @@ final class AppModel: ObservableObject {
     func selectQueue(_ queue: QueueSummary) {
         selectedQueue = queue
         selectedState = nil
-        selectedJob = nil
-        selectedJobDetail = nil
+        resetSelectedJob()
         runPage = 0
         applyCachedPanelData(for: queue.name)
         scheduleRefresh(for: selectedView)
@@ -189,8 +202,7 @@ final class AppModel: ObservableObject {
 
     func selectWorkspaceView(_ view: QueueWorkspaceView) {
         selectedView = view
-        selectedJob = nil
-        selectedJobDetail = nil
+        resetSelectedJob()
         if view == .runs, let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         } else if let selectedQueue {
@@ -216,8 +228,7 @@ final class AppModel: ObservableObject {
             }
             selectedQueue = overview
             selectedState = nil
-            selectedJob = nil
-            selectedJobDetail = nil
+            resetSelectedJob()
             runPage = 0
             persistCurrentQueueNames()
             persistCurrentQueueMetadata()
@@ -246,8 +257,7 @@ final class AppModel: ObservableObject {
         if selectedQueue?.name == queueName {
             selectedQueue = queues.first
             selectedState = nil
-            selectedJob = nil
-            selectedJobDetail = nil
+            resetSelectedJob()
             jobs = []
             runPage = 0
             runTotal = 0
@@ -310,8 +320,7 @@ final class AppModel: ObservableObject {
     func selectState(_ state: BullMQState) {
         selectedState = selectedState == state ? nil : state
         selectedView = .runs
-        selectedJob = nil
-        selectedJobDetail = nil
+        resetSelectedJob()
         runPage = 0
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
@@ -322,8 +331,7 @@ final class AppModel: ObservableObject {
     func goToPreviousRunPage() {
         guard canGoToPreviousRunPage else { return }
         runPage -= 1
-        selectedJob = nil
-        selectedJobDetail = nil
+        resetSelectedJob()
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         }
@@ -333,8 +341,7 @@ final class AppModel: ObservableObject {
     func goToNextRunPage() {
         guard canGoToNextRunPage else { return }
         runPage += 1
-        selectedJob = nil
-        selectedJobDetail = nil
+        resetSelectedJob()
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         }
@@ -342,13 +349,47 @@ final class AppModel: ObservableObject {
     }
 
     func selectJob(_ job: JobSummary) {
+        selectedJobDetailTask?.cancel()
+        selectedJobLogTask?.cancel()
         selectedJob = job
-        Task { await loadSelectedJobDetail() }
+        selectedJobDetail = nil
+        selectedJobLogs = .empty
+        isLoadingSelectedJobLogs = false
+        isStreamingSelectedJobLogs = false
+        selectedJobDetailTask = Task { [weak self] in
+            await self?.loadSelectedJobDetail()
+        }
     }
 
     func clearSelectedJob() {
-        selectedJob = nil
-        selectedJobDetail = nil
+        resetSelectedJob()
+    }
+
+    func showSelectedJobLogs() {
+        selectedJobLogTask?.cancel()
+        selectedJobLogTask = Task { [weak self] in
+            guard let self else { return }
+            await self.loadSelectedJobLogs(streamIfActive: self.selectedJob?.state == .active)
+        }
+    }
+
+    func stopSelectedJobLogStreaming() {
+        selectedJobLogTask?.cancel()
+        selectedJobLogTask = nil
+        isStreamingSelectedJobLogs = false
+    }
+
+    func loadOlderSelectedJobLogs() {
+        guard !isLoadingSelectedJobLogs, let firstLogID = selectedJobLogs.entries.first?.id, firstLogID > 1 else { return }
+        selectedJobLogTask?.cancel()
+        selectedJobLogTask = Task { [weak self] in
+            guard let self else { return }
+            let shouldResumeStreaming = self.selectedJob?.state == .active
+            await self.loadOlderSelectedJobLogs(before: firstLogID)
+            if shouldResumeStreaming {
+                await self.loadSelectedJobLogs(streamIfActive: true)
+            }
+        }
     }
 
     private func refreshSelectedQueueThrowing(for view: QueueWorkspaceView, requestID: Int) async throws {
@@ -426,18 +467,116 @@ final class AppModel: ObservableObject {
 
     private func loadSelectedJobDetail() async {
         await runLoading(.jobDetail) {
-            guard let selectedJob else { return }
-            let jobID = selectedJob.id
-            let detail = try await engine.getJobDetail(
+            try await loadSelectedJobDetailThrowing()
+        }
+    }
+
+    private func loadSelectedJobDetailThrowing() async throws {
+        guard let selectedJob else { return }
+        let jobID = selectedJob.id
+        let detail = try await engine.getJobDetail(
+            queueName: selectedJob.queueName,
+            prefix: prefix,
+            jobID: selectedJob.id,
+            state: selectedJob.state
+        )
+        try Task.checkCancellation()
+        guard self.selectedJob?.id == jobID else { return }
+        selectedJobDetail = detail
+    }
+
+    private func resetSelectedJob() {
+        selectedJobDetailTask?.cancel()
+        selectedJobDetailTask = nil
+        selectedJobLogTask?.cancel()
+        selectedJobLogTask = nil
+        selectedJob = nil
+        selectedJobDetail = nil
+        selectedJobLogs = .empty
+        isLoadingSelectedJobLogs = false
+        isStreamingSelectedJobLogs = false
+    }
+
+    private func loadSelectedJobLogs(streamIfActive: Bool) async {
+        await loadLatestSelectedJobLogs(showLoading: true)
+        guard streamIfActive else { return }
+
+        isStreamingSelectedJobLogs = true
+        defer { isStreamingSelectedJobLogs = false }
+
+        while !Task.isCancelled, selectedJob?.state == .active, selectedJobDetail?.finishedOn == nil {
+            do {
+                try await Task.sleep(nanoseconds: activeJobLogRefreshInterval)
+            } catch {
+                return
+            }
+            await loadLatestSelectedJobLogs(showLoading: false)
+        }
+    }
+
+    private func loadLatestSelectedJobLogs(showLoading: Bool) async {
+        guard let selectedJob else { return }
+        let jobID = selectedJob.id
+        if showLoading {
+            isLoadingSelectedJobLogs = true
+        }
+        defer {
+            if showLoading {
+                isLoadingSelectedJobLogs = false
+            }
+        }
+
+        do {
+            let logs = try await engine.getJobLogs(
                 queueName: selectedJob.queueName,
                 prefix: prefix,
                 jobID: selectedJob.id,
-                state: selectedJob.state
+                start: nil,
+                limit: jobLogPageSize
             )
             try Task.checkCancellation()
             guard self.selectedJob?.id == jobID else { return }
-            selectedJobDetail = detail
+            selectedJobLogs = mergeLogs(selectedJobLogs, with: logs)
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = error.localizedDescription
         }
+    }
+
+    private func loadOlderSelectedJobLogs(before firstLogID: Int) async {
+        guard let selectedJob else { return }
+        let jobID = selectedJob.id
+        let start = max(0, firstLogID - jobLogPageSize - 1)
+        isLoadingSelectedJobLogs = true
+        defer { isLoadingSelectedJobLogs = false }
+
+        do {
+            let logs = try await engine.getJobLogs(
+                queueName: selectedJob.queueName,
+                prefix: prefix,
+                jobID: selectedJob.id,
+                start: start,
+                limit: firstLogID - start - 1
+            )
+            try Task.checkCancellation()
+            guard self.selectedJob?.id == jobID else { return }
+            selectedJobLogs = mergeLogs(selectedJobLogs, with: logs)
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func mergeLogs(_ current: JobLogs, with incoming: JobLogs) -> JobLogs {
+        let entriesByID = Dictionary(uniqueKeysWithValues: (current.entries + incoming.entries).map { ($0.id, $0) })
+        return JobLogs(
+            entries: entriesByID.values.sorted { $0.id < $1.id },
+            total: incoming.total
+        )
     }
 
     private func loadJobs(queueName: String) async throws -> JobPage {
@@ -513,6 +652,10 @@ final class AppModel: ObservableObject {
 
     private func resetQueueStateForNewConnection() {
         refreshRequestID += 1
+        selectedJobDetailTask?.cancel()
+        selectedJobDetailTask = nil
+        selectedJobLogTask?.cancel()
+        selectedJobLogTask = nil
         queues = []
         jobs = []
         runPage = 0
@@ -524,6 +667,9 @@ final class AppModel: ObservableObject {
         selectedState = nil
         selectedJob = nil
         selectedJobDetail = nil
+        selectedJobLogs = .empty
+        isLoadingSelectedJobLogs = false
+        isStreamingSelectedJobLogs = false
         jobsByQuery = [:]
         runTotalsByQuery = [:]
         workersByQueue = [:]

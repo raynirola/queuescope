@@ -2,6 +2,7 @@ import SwiftUI
 
 struct JobInspectorView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var selectedPanel: JobInspectorPanel = .details
 
     var body: some View {
         Group {
@@ -9,22 +10,44 @@ struct JobInspectorView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         header(detail)
-                        detailRows(detail)
-                        DisplaySection(title: "Payload", value: detail.data)
-                        DisplaySection(title: "Options", value: detail.options)
-                        DisplaySection(title: "Progress", value: detail.progress)
-                        DisplaySection(title: "Return value", value: detail.returnValue)
-                        if let failedReason = detail.failedReason, !failedReason.isEmpty {
-                            TextBlockSection(title: "Failed reason", text: failedReason)
+                        Picker("Inspector panel", selection: $selectedPanel) {
+                            ForEach(JobInspectorPanel.allCases) { panel in
+                                Text(panel.title).tag(panel)
+                            }
                         }
-                        if !detail.stacktrace.isEmpty {
-                            StackTraceSection(stacktrace: detail.stacktrace)
-                                .id(detail.id)
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        switch selectedPanel {
+                        case .details:
+                            detailRows(detail)
+                            DisplaySection(title: "Payload", value: detail.data)
+                            DisplaySection(title: "Options", value: detail.options)
+                            DisplaySection(title: "Progress", value: detail.progress)
+                            DisplaySection(title: "Return value", value: detail.returnValue)
+                            if let failedReason = detail.failedReason, !failedReason.isEmpty {
+                                TextBlockSection(title: "Failed reason", text: failedReason)
+                            }
+                            if !detail.stacktrace.isEmpty {
+                                StackTraceSection(stacktrace: detail.stacktrace)
+                                    .id(detail.id)
+                            }
+                        case .logs:
+                            LogsPanel()
                         }
                     }
                     .padding(18)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
+                .onChange(of: selectedPanel) { _, panel in
+                    if panel == .details {
+                        model.stopSelectedJobLogStreaming()
+                    }
+                }
+                .onChange(of: detail.id) { _, _ in
+                    selectedPanel = .details
+                    model.stopSelectedJobLogStreaming()
+                }
             } else {
                 EmptyView()
             }
@@ -88,6 +111,20 @@ struct JobInspectorView: View {
     }
 }
 
+private enum JobInspectorPanel: String, CaseIterable, Identifiable {
+    case details
+    case logs
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .details: "Details"
+        case .logs: "Logs"
+        }
+    }
+}
+
 private struct StackTraceSection: View {
     let stacktrace: [String]
     @State private var visibleCount = 5
@@ -133,6 +170,98 @@ private struct StackTraceSection: View {
 
     private var visibleStacktrace: [String] {
         Array(stacktrace.prefix(visibleCount))
+    }
+}
+
+private struct LogsPanel: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Logs")
+                    .font(.subheadline.weight(.semibold))
+                if model.isStreamingSelectedJobLogs {
+                    HStack(spacing: 5) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text("Streaming")
+                            .font(.caption.weight(.medium))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(countText(model.selectedJobLogs))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            if model.selectedJobLogs.entries.first?.id ?? 1 > 1 {
+                Button {
+                    model.loadOlderSelectedJobLogs()
+                } label: {
+                    HStack(spacing: 6) {
+                        if model.isLoadingSelectedJobLogs {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                        Text("Load older")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.isLoadingSelectedJobLogs)
+            }
+
+            if model.selectedJobLogs.entries.isEmpty {
+                Text("No logs recorded for this run.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.primary.opacity(0.06))
+                    }
+            } else {
+                ScrollView(.horizontal) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(model.selectedJobLogs.entries) { entry in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("\(entry.id)")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 34, alignment: .trailing)
+                                Text(entry.text)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.06))
+                }
+            }
+        }
+        .onAppear {
+            model.showSelectedJobLogs()
+        }
+        .onDisappear {
+            model.stopSelectedJobLogStreaming()
+        }
+    }
+
+    private func countText(_ logs: JobLogs) -> String {
+        if logs.isTruncated {
+            return "Showing \(logs.entries.count) of \(logs.total)"
+        }
+        return "\(logs.total) lines"
     }
 }
 

@@ -203,6 +203,75 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertEqual(model.queues.first?.groupName, "Production")
         XCTAssertEqual(model.selectedQueue?.resolvedGroupName, "Production")
     }
+
+    func testSelectingActiveRunDoesNotLoadLogsUntilRequested() async {
+        let engine = FakeBullMQEngine()
+        engine.jobDetails["1"] = makeJobDetail(id: "1", queueName: "email", state: .active)
+        engine.jobLogLines["1"] = ["started"]
+        let model = AppModel(engine: engine)
+
+        model.selectJob(makeJob(id: "1", queueName: "email", state: .active))
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(engine.jobDetailCalls, ["1"])
+        XCTAssertTrue(engine.jobLogCalls.isEmpty)
+        XCTAssertFalse(model.isStreamingSelectedJobLogs)
+        XCTAssertTrue(model.selectedJobLogs.entries.isEmpty)
+    }
+
+    func testActiveRunStreamsLogsAfterLogsAreShown() async {
+        let engine = FakeBullMQEngine()
+        engine.jobDetails["1"] = makeJobDetail(id: "1", queueName: "email", state: .active)
+        engine.jobLogLines["1"] = ["started"]
+        let model = AppModel(engine: engine)
+
+        model.selectJob(makeJob(id: "1", queueName: "email", state: .active))
+        model.showSelectedJobLogs()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(engine.jobLogCalls.first?.jobID, "1")
+        XCTAssertEqual(engine.jobLogCalls.first?.limit, 50)
+        XCTAssertNil(engine.jobLogCalls.first?.start)
+        XCTAssertTrue(model.isStreamingSelectedJobLogs)
+        XCTAssertEqual(model.selectedJobLogs.entries.map(\.text), ["started"])
+
+        model.clearSelectedJob()
+        XCTAssertFalse(model.isStreamingSelectedJobLogs)
+    }
+
+    func testCompletedRunLoadsLogsWithoutStreamingWhenLogsAreShown() async {
+        let engine = FakeBullMQEngine()
+        engine.jobDetails["2"] = makeJobDetail(id: "2", queueName: "email", state: .completed)
+        engine.jobLogLines["2"] = ["done"]
+        let model = AppModel(engine: engine)
+
+        model.selectJob(makeJob(id: "2", queueName: "email", state: .completed))
+        model.showSelectedJobLogs()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(engine.jobLogCalls.map(\.jobID), ["2"])
+        XCTAssertFalse(model.isStreamingSelectedJobLogs)
+        XCTAssertEqual(model.selectedJobLogs.entries.map(\.text), ["done"])
+    }
+
+    func testLoadOlderLogsFetchesOnlyPreviousWindow() async {
+        let engine = FakeBullMQEngine()
+        engine.jobDetails["3"] = makeJobDetail(id: "3", queueName: "email", state: .completed)
+        engine.jobLogLines["3"] = (1...60).map { "line \($0)" }
+        let model = AppModel(engine: engine)
+
+        model.selectJob(makeJob(id: "3", queueName: "email", state: .completed))
+        model.showSelectedJobLogs()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        model.loadOlderSelectedJobLogs()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(engine.jobLogCalls.map(\.start), [nil, 0])
+        XCTAssertEqual(engine.jobLogCalls.map(\.limit), [50, 10])
+        XCTAssertEqual(model.selectedJobLogs.entries.count, 60)
+        XCTAssertEqual(model.selectedJobLogs.entries.first?.text, "line 1")
+        XCTAssertEqual(model.selectedJobLogs.entries.last?.text, "line 60")
+    }
 }
 
 private func makeJob(id: String, queueName: String, state: BullMQState) -> JobSummary {
@@ -222,14 +291,37 @@ private func makeJob(id: String, queueName: String, state: BullMQState) -> JobSu
     )
 }
 
+private func makeJobDetail(id: String, queueName: String, state: BullMQState) -> JobDetail {
+    JobDetail(
+        id: id,
+        queueName: queueName,
+        state: state,
+        fields: [:],
+        data: .empty,
+        options: .empty,
+        progress: .empty,
+        returnValue: .empty,
+        failedReason: nil,
+        stacktrace: [],
+        timestamp: nil,
+        processedOn: nil,
+        finishedOn: nil,
+        attemptsMade: 0
+    )
+}
+
 private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     var overviewCalls: [String] = []
     var recentJobsCalls: [String] = []
     var recentJobsLimits: [Int] = []
     var workerCalls: [String] = []
     var schedulerCalls: [String] = []
+    var jobDetailCalls: [String] = []
+    var jobLogCalls: [(jobID: String, start: Int?, limit: Int)] = []
     var overviewDelayByQueue: [String: UInt64] = [:]
     var recentJobs: [JobSummary] = []
+    var jobDetails: [String: JobDetail] = [:]
+    var jobLogLines: [String: [String]] = [:]
 
     func connect(_ config: RedisConnectionConfig) async throws {}
 
@@ -254,22 +346,23 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     }
 
     func getJobDetail(queueName: String, prefix: String, jobID: String, state: BullMQState) async throws -> JobDetail {
-        JobDetail(
-            id: jobID,
-            queueName: queueName,
-            state: state,
-            fields: [:],
-            data: .empty,
-            options: .empty,
-            progress: .empty,
-            returnValue: .empty,
-            failedReason: nil,
-            stacktrace: [],
-            timestamp: nil,
-            processedOn: nil,
-            finishedOn: nil,
-            attemptsMade: 0
-        )
+        jobDetailCalls.append(jobID)
+        return jobDetails[jobID] ?? makeJobDetail(id: jobID, queueName: queueName, state: state)
+    }
+
+    func getJobLogs(queueName: String, prefix: String, jobID: String, start: Int?, limit: Int) async throws -> JobLogs {
+        jobLogCalls.append((jobID: jobID, start: start, limit: limit))
+        let lines = jobLogLines[jobID] ?? []
+        guard !lines.isEmpty else { return .empty }
+        let lowerBound = start ?? max(0, lines.count - limit)
+        let upperBound = min(lines.count, lowerBound + limit)
+        guard lowerBound < upperBound else {
+            return JobLogs(entries: [], total: lines.count)
+        }
+        let entries = lines[lowerBound..<upperBound].enumerated().map { offset, line in
+            JobLogEntry(id: lowerBound + offset + 1, text: line)
+        }
+        return JobLogs(entries: entries, total: lines.count)
     }
 
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {
