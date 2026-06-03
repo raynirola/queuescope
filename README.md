@@ -1,6 +1,6 @@
-# BullMQ Dashboard
+# QueueScope
 
-Native macOS SwiftUI dashboard for BullMQ queues.
+Native macOS SwiftUI dashboard for inspecting BullMQ queues.
 
 The first implementation is a read-only desktop app targeting BullMQ `5.77.x` Redis layouts. It connects directly to Redis, discovers BullMQ queues, shows queue health, pages jobs by state, and opens job payloads/failures in an inspector.
 
@@ -24,7 +24,7 @@ Open the Xcode project:
 xed BullMQDashboard.xcodeproj
 ```
 
-Select the `BullMQDashboard` scheme and press Run.
+Select the `BullMQDashboard` scheme and press Run. The app builds as QueueScope.
 
 ## Test
 

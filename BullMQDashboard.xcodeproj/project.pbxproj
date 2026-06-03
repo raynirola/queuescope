@@ -30,6 +30,7 @@
 		100000000000000000000113 /* RedisURLParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000213 /* RedisURLParserTests.swift */; };
 		100000000000000000000114 /* RESPParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* RESPParserTests.swift */; };
 		100000000000000000000115 /* JSONSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000216 /* JSONSyntaxHighlighter.swift */; };
+		100000000000000000000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000218 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,7 +44,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		100000000000000000000001 /* BullMQDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BullMQDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		100000000000000000000001 /* QueueScope.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = QueueScope.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000201 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		100000000000000000000202 /* BullMQDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQDashboardApp.swift; sourceTree = "<group>"; };
 		100000000000000000000203 /* BullMQRedisEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BullMQRedisEngine.swift; sourceTree = "<group>"; };
@@ -67,6 +68,7 @@
 		100000000000000000000214 /* RESPParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RESPParserTests.swift; sourceTree = "<group>"; };
 		100000000000000000000215 /* BullMQDashboardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BullMQDashboardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000216 /* JSONSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONSyntaxHighlighter.swift; sourceTree = "<group>"; };
+		100000000000000000000218 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +107,7 @@
 				100000000000000000000406 /* Domain */,
 				100000000000000000000407 /* Persistence */,
 				100000000000000000000408 /* UI */,
+				100000000000000000000218 /* Assets.xcassets */,
 			);
 			path = BullMQDashboard;
 			sourceTree = "<group>";
@@ -112,7 +115,7 @@
 		100000000000000000000403 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				100000000000000000000001 /* BullMQDashboard.app */,
+				100000000000000000000001 /* QueueScope.app */,
 				100000000000000000000215 /* BullMQDashboardTests.xctest */,
 			);
 			name = Products;
@@ -202,7 +205,7 @@
 				100000000000000000000A02 /* Highlight */,
 			);
 			productName = BullMQDashboard;
-			productReference = 100000000000000000000001 /* BullMQDashboard.app */;
+			productReference = 100000000000000000000001 /* QueueScope.app */;
 			productType = "com.apple.product-type.application";
 		};
 		100000000000000000000502 /* BullMQDashboardTests */ = {
@@ -268,6 +271,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				100000000000000000000117 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -448,13 +452,14 @@
 		100000000000000000000803 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TH48DG8RVN;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "BullMQ Dashboard";
+				INFOPLIST_KEY_CFBundleDisplayName = QueueScope;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = "";
@@ -463,9 +468,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboard;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = QueueScope;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 			};
@@ -474,13 +479,14 @@
 		100000000000000000000804 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TH48DG8RVN;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "BullMQ Dashboard";
+				INFOPLIST_KEY_CFBundleDisplayName = QueueScope;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = "";
@@ -489,9 +495,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboard;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = QueueScope;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 			};
@@ -505,11 +511,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboardTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BullMQDashboard.app/Contents/MacOS/BullMQDashboard";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/QueueScope.app/Contents/MacOS/QueueScope";
 			};
 			name = Debug;
 		};
@@ -521,11 +527,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboardTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BullMQDashboard.app/Contents/MacOS/BullMQDashboard";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/QueueScope.app/Contents/MacOS/QueueScope";
 			};
 			name = Release;
 		};
