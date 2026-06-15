@@ -70,6 +70,12 @@ xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard -configura
 
 The UI talks to `BullMQEngine`, keeping Redis reads and BullMQ-backed writes behind one replaceable interface.
 
+## License
+
+QueueScope is proprietary source-visible software. No use, modification,
+distribution, hosting, or derivative works are allowed without explicit written
+permission from Ray Nirola. See [LICENSE](LICENSE).
+
 ## Safety
 
 Dashboard refreshes use read-style Redis commands such as `SCAN`, `LLEN`, `ZCARD`, `LRANGE`, `ZREVRANGE`, and `HGETALL`. Job mutations are limited to the inspector actions and are delegated to BullMQ itself, so locked jobs, wrong-state retries, and invalid promotions fail with BullMQ errors instead of hand-edited Redis state.
