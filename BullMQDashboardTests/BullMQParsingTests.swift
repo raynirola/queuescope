@@ -296,6 +296,134 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertEqual(merged.entries.map(\.text), ["first", "second latest", "third"])
         XCTAssertEqual(merged.total, 3)
     }
+
+    func testJobActionStateGatesMatchBullMQSupportedStates() {
+        XCTAssertTrue(AppModel.canRetry(makeJob(id: "failed", queueName: "email", state: .failed)))
+        XCTAssertTrue(AppModel.canRetry(makeJob(id: "completed", queueName: "email", state: .completed)))
+        XCTAssertFalse(AppModel.canRetry(makeJob(id: "waiting", queueName: "email", state: .waiting)))
+
+        XCTAssertTrue(AppModel.canPromote(makeJob(id: "delayed", queueName: "email", state: .delayed)))
+        XCTAssertFalse(AppModel.canPromote(makeJob(id: "active", queueName: "email", state: .active)))
+
+        XCTAssertTrue(AppModel.canRemove(makeJob(id: "failed", queueName: "email", state: .failed)))
+        XCTAssertFalse(AppModel.canRemove(makeJob(id: "active", queueName: "email", state: .active)))
+    }
+
+    func testDuplicateDraftStripsCopiedJobIDAndRepeatOptions() {
+        let detail = JobDetail(
+            id: "1",
+            queueName: "email",
+            state: .failed,
+            fields: [
+                "name": "send-email",
+                "data": #"{"leadId":"lead_1"}"#,
+                "opts": #"{"attempts":3,"jobId":"original","repeat":{"every":60000}}"#
+            ],
+            data: .empty,
+            options: .empty,
+            progress: .empty,
+            returnValue: .empty,
+            failedReason: nil,
+            stacktrace: [],
+            timestamp: nil,
+            processedOn: nil,
+            finishedOn: nil,
+            attemptsMade: 0
+        )
+
+        let draft = AppModel.duplicateDraft(for: detail)
+
+        XCTAssertEqual(draft.name, "send-email")
+        XCTAssertTrue(draft.dataJSON.contains("leadId"))
+        XCTAssertTrue(draft.optionsJSON.contains("attempts"))
+        XCTAssertFalse(draft.optionsJSON.contains("jobId"))
+        XCTAssertFalse(draft.optionsJSON.contains("repeat"))
+    }
+
+    func testDuplicateJSONValidationRejectsInvalidJSON() {
+        XCTAssertNoThrow(try AppModel.parseDuplicateJSON(#"{"ok":true}"#, label: "Data"))
+        XCTAssertThrowsError(try AppModel.parseDuplicateJSON("{", label: "Data"))
+    }
+
+    func testRetryRefreshesRunsAndReloadsSelectedDetail() async {
+        let engine = FakeBullMQEngine()
+        let job = makeJob(id: "1", queueName: "email", state: .failed)
+        engine.recentJobs = [job]
+        engine.jobDetails["1"] = makeJobDetail(id: "1", queueName: "email", state: .failed)
+        let model = AppModel(engine: engine)
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+        model.selectedView = .runs
+        model.selectedJob = job
+        model.selectedJobDetail = engine.jobDetails["1"]
+
+        await model.retryJob(job)
+
+        XCTAssertEqual(engine.retryCalls.map(\.jobID), ["1"])
+        XCTAssertEqual(engine.overviewCalls, ["email"])
+        XCTAssertEqual(engine.recentJobsCalls, ["email"])
+        XCTAssertEqual(engine.jobDetailCalls, ["1"])
+        XCTAssertEqual(model.statusMessage, "Retried job 1")
+    }
+
+    func testRemoveRefreshesRunsAndClearsSelectedJob() async {
+        let engine = FakeBullMQEngine()
+        let job = makeJob(id: "2", queueName: "email", state: .failed)
+        engine.recentJobs = []
+        let model = AppModel(engine: engine)
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+        model.selectedView = .runs
+        model.selectedJob = job
+        model.selectedJobDetail = makeJobDetail(id: "2", queueName: "email", state: .failed)
+
+        await model.removeJob(job)
+
+        XCTAssertEqual(engine.removeCalls.map(\.jobID), ["2"])
+        XCTAssertEqual(engine.removeCalls.map(\.removeChildren), [true])
+        XCTAssertNil(model.selectedJob)
+        XCTAssertNil(model.selectedJobDetail)
+        XCTAssertEqual(model.statusMessage, "Removed job 2")
+    }
+
+    func testPromoteRefreshesRunsAndReloadsSelectedDetail() async {
+        let engine = FakeBullMQEngine()
+        let job = makeJob(id: "3", queueName: "email", state: .delayed)
+        engine.recentJobs = [job]
+        engine.jobDetails["3"] = makeJobDetail(id: "3", queueName: "email", state: .delayed)
+        let model = AppModel(engine: engine)
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+        model.selectedView = .runs
+        model.selectedJob = job
+        model.selectedJobDetail = engine.jobDetails["3"]
+
+        await model.promoteJob(job)
+
+        XCTAssertEqual(engine.promoteCalls, ["3"])
+        XCTAssertEqual(engine.recentJobsCalls, ["email"])
+        XCTAssertEqual(engine.jobDetailCalls, ["3"])
+        XCTAssertEqual(model.statusMessage, "Promoted job 3")
+    }
+
+    func testDuplicateRefreshesRunsWithoutChangingSelection() async {
+        let engine = FakeBullMQEngine()
+        engine.duplicatedJobID = "4"
+        let model = AppModel(engine: engine)
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+        model.selectedView = .runs
+
+        await model.duplicateJob(
+            queueName: "email",
+            draft: JobDuplicateDraft(
+                name: "send-email",
+                dataJSON: #"{"leadId":"lead_1"}"#,
+                optionsJSON: #"{"attempts":3}"#
+            )
+        )
+
+        XCTAssertEqual(engine.duplicateCalls.map(\.name), ["send-email"])
+        XCTAssertEqual(engine.overviewCalls, ["email"])
+        XCTAssertEqual(engine.recentJobsCalls, ["email"])
+        XCTAssertEqual(model.statusMessage, "Duplicated job 4")
+    }
 }
 
 private func makeJob(id: String, queueName: String, state: BullMQState) -> JobSummary {
@@ -346,6 +474,11 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     var recentJobs: [JobSummary] = []
     var jobDetails: [String: JobDetail] = [:]
     var jobLogLines: [String: [String]] = [:]
+    var retryCalls: [(jobID: String, state: BullMQState)] = []
+    var removeCalls: [(jobID: String, removeChildren: Bool)] = []
+    var promoteCalls: [String] = []
+    var duplicateCalls: [(name: String, data: AnySendableJSON, options: AnySendableJSON)] = []
+    var duplicatedJobID = "duplicated"
 
     func connect(_ config: RedisConnectionConfig) async throws {}
 
@@ -387,6 +520,23 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
             JobLogEntry(id: lowerBound + offset + 1, text: line)
         }
         return JobLogs(entries: entries, total: lines.count)
+    }
+
+    func retryJob(queueName: String, prefix: String, jobID: String, state: BullMQState) async throws {
+        retryCalls.append((jobID: jobID, state: state))
+    }
+
+    func removeJob(queueName: String, prefix: String, jobID: String, removeChildren: Bool) async throws {
+        removeCalls.append((jobID: jobID, removeChildren: removeChildren))
+    }
+
+    func promoteJob(queueName: String, prefix: String, jobID: String) async throws {
+        promoteCalls.append(jobID)
+    }
+
+    func duplicateJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String {
+        duplicateCalls.append((name: name, data: data, options: options))
+        return duplicatedJobID
     }
 
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {

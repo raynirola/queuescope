@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct BullMQDashboardApp: App {
     @StateObject private var appModel = AppModel()
+    @StateObject private var appUpdater = AppUpdater()
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +17,13 @@ struct BullMQDashboardApp: App {
                     Task { await appModel.refreshSelectedQueue() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+            }
+
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates...") {
+                    appUpdater.checkForUpdates()
+                }
+                .disabled(!appUpdater.canCheckForUpdates)
             }
         }
     }
