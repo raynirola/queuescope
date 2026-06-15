@@ -60,6 +60,31 @@ async function getJob(queue, jobID) {
   return job;
 }
 
+function duplicateOptions(rawOptions) {
+  if (rawOptions === null || typeof rawOptions !== "object" || Array.isArray(rawOptions)) {
+    throw new Error("Duplicate options must be a JSON object.");
+  }
+
+  const options = { ...rawOptions };
+
+  // These fields are persisted/internal identity or relationship fields. Reusing
+  // them can either collide with the copied job or pass object values into
+  // BullMQ's Lua scripts where only strings/numbers are valid.
+  for (const key of [
+    "jobId",
+    "repeat",
+    "repeatJobKey",
+    "prevMillis",
+    "parent",
+    "parentKey",
+    "de"
+  ]) {
+    delete options[key];
+  }
+
+  return options;
+}
+
 async function run(request) {
   const redis = requiredObject(request.redis, "redis");
   const queueName = requiredString(request.queueName, "queueName");
@@ -95,7 +120,7 @@ async function run(request) {
     case "duplicate": {
       const name = requiredString(payload.name, "name");
       const data = payload.data ?? {};
-      const options = payload.options ?? {};
+      const options = duplicateOptions(payload.options ?? {});
       const job = await queue.add(name, data, options);
       return { jobID: job.id };
     }
