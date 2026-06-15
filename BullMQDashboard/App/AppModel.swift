@@ -888,8 +888,9 @@ final class AppModel: ObservableObject {
         do {
             let object = try JSONSerialization.jsonObject(with: Data(rawValue.utf8), options: [])
             if var options = object as? [String: Any] {
-                options.removeValue(forKey: "jobId")
-                options.removeValue(forKey: "repeat")
+                for key in ["jobId", "repeat", "repeatJobKey", "prevMillis", "parent", "parentKey", "de"] {
+                    options.removeValue(forKey: key)
+                }
                 guard JSONSerialization.isValidJSONObject(options) else { return "{}" }
                 let data = try JSONSerialization.data(withJSONObject: options, options: [.prettyPrinted, .sortedKeys])
                 return String(data: data, encoding: .utf8) ?? "{}"

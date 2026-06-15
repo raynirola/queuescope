@@ -317,7 +317,7 @@ final class AppModelRefreshTests: XCTestCase {
             fields: [
                 "name": "send-email",
                 "data": #"{"leadId":"lead_1"}"#,
-                "opts": #"{"attempts":3,"jobId":"original","repeat":{"every":60000}}"#
+                "opts": #"{"attempts":3,"jobId":"original","repeat":{"every":60000},"de":{"id":"dedupe-key"},"parentKey":"bull:parent","prevMillis":1781107200000}"#
             ],
             data: .empty,
             options: .empty,
@@ -338,6 +338,9 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertTrue(draft.optionsJSON.contains("attempts"))
         XCTAssertFalse(draft.optionsJSON.contains("jobId"))
         XCTAssertFalse(draft.optionsJSON.contains("repeat"))
+        XCTAssertFalse(draft.optionsJSON.contains("de"))
+        XCTAssertFalse(draft.optionsJSON.contains("parentKey"))
+        XCTAssertFalse(draft.optionsJSON.contains("prevMillis"))
     }
 
     func testDuplicateJSONValidationRejectsInvalidJSON() {
