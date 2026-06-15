@@ -85,6 +85,13 @@ function duplicateOptions(rawOptions) {
   return options;
 }
 
+function addOptions(rawOptions) {
+  if (rawOptions === null || typeof rawOptions !== "object" || Array.isArray(rawOptions)) {
+    throw new Error("Options must be a JSON object.");
+  }
+  return rawOptions;
+}
+
 async function run(request) {
   const redis = requiredObject(request.redis, "redis");
   const queueName = requiredString(request.queueName, "queueName");
@@ -121,6 +128,13 @@ async function run(request) {
       const name = requiredString(payload.name, "name");
       const data = payload.data ?? {};
       const options = duplicateOptions(payload.options ?? {});
+      const job = await queue.add(name, data, options);
+      return { jobID: job.id };
+    }
+    case "add": {
+      const name = requiredString(payload.name, "name");
+      const data = payload.data ?? {};
+      const options = addOptions(payload.options ?? {});
       const job = await queue.add(name, data, options);
       return { jobID: job.id };
     }
