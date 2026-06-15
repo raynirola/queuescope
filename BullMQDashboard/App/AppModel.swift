@@ -16,6 +16,7 @@ enum JobActionKind: String, Sendable {
     case remove
     case promote
     case duplicate
+    case add
 }
 
 struct JobDuplicateDraft: Equatable, Sendable {
@@ -39,6 +40,7 @@ final class AppModel: ObservableObject {
     @Published var runPage = 0
     @Published var runTotal = 0
     @Published var selectedJob: JobSummary?
+    @Published var selectedJobIDs: Set<String> = []
     @Published var selectedJobDetail: JobDetail?
     @Published var selectedJobLogs: JobLogs = .empty
     @Published var isLoadingSelectedJobLogs = false
@@ -116,6 +118,30 @@ final class AppModel: ObservableObject {
         return "\(start)-\(end) of \(runTotal)"
     }
 
+    var selectedVisibleJobCount: Int {
+        jobs.filter { selectedJobIDs.contains($0.id) }.count
+    }
+
+    var allVisibleJobsSelected: Bool {
+        !jobs.isEmpty && selectedVisibleJobCount == jobs.count
+    }
+
+    var selectedBulkRetryCount: Int {
+        selectedVisibleJobs.filter(Self.canRetry).count
+    }
+
+    var selectedBulkPromoteCount: Int {
+        selectedVisibleJobs.filter(Self.canPromote).count
+    }
+
+    var selectedBulkRemoveCount: Int {
+        selectedVisibleJobs.filter(Self.canRemove).count
+    }
+
+    private var selectedVisibleJobs: [JobSummary] {
+        jobs.filter { selectedJobIDs.contains($0.id) }
+    }
+
     func connect() async {
         await runLoading(.connecting) {
             let parsed = try RedisURLParser.parse(redisURL, prefix: prefix)
@@ -152,6 +178,7 @@ final class AppModel: ObservableObject {
         selectedState = nil
         selectedQueue = nil
         selectedJob = nil
+        selectedJobIDs = []
         selectedJobDetail = nil
         selectedJobLogs = .empty
         isLoadingSelectedJobLogs = false
@@ -222,6 +249,7 @@ final class AppModel: ObservableObject {
         selectedQueue = queue
         selectedState = nil
         resetSelectedJob()
+        clearSelectedJobSelection()
         runPage = 0
         applyCachedPanelData(for: queue.name)
         persistCurrentWorkspacePreference()
@@ -231,6 +259,7 @@ final class AppModel: ObservableObject {
     func selectWorkspaceView(_ view: QueueWorkspaceView) {
         selectedView = view
         resetSelectedJob()
+        clearSelectedJobSelection()
         if view == .runs, let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         } else if let selectedQueue {
@@ -258,6 +287,7 @@ final class AppModel: ObservableObject {
             selectedQueue = overview
             selectedState = nil
             resetSelectedJob()
+            clearSelectedJobSelection()
             runPage = 0
             persistCurrentQueueNames()
             persistCurrentQueueMetadata()
@@ -288,6 +318,7 @@ final class AppModel: ObservableObject {
             selectedQueue = queues.first
             selectedState = nil
             resetSelectedJob()
+            clearSelectedJobSelection()
             jobs = []
             runPage = 0
             runTotal = 0
@@ -352,6 +383,7 @@ final class AppModel: ObservableObject {
         selectedState = selectedState == state ? nil : state
         selectedView = .runs
         resetSelectedJob()
+        clearSelectedJobSelection()
         runPage = 0
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
@@ -364,6 +396,7 @@ final class AppModel: ObservableObject {
         guard canGoToPreviousRunPage else { return }
         runPage -= 1
         resetSelectedJob()
+        clearSelectedJobSelection()
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         }
@@ -374,6 +407,7 @@ final class AppModel: ObservableObject {
         guard canGoToNextRunPage else { return }
         runPage += 1
         resetSelectedJob()
+        clearSelectedJobSelection()
         if let selectedQueue {
             applyCachedRuns(for: selectedQueue.name)
         }
@@ -395,6 +429,30 @@ final class AppModel: ObservableObject {
 
     func clearSelectedJob() {
         resetSelectedJob()
+    }
+
+    func isJobSelectedForBulk(_ job: JobSummary) -> Bool {
+        selectedJobIDs.contains(job.id)
+    }
+
+    func toggleJobSelection(_ job: JobSummary) {
+        if selectedJobIDs.contains(job.id) {
+            selectedJobIDs.remove(job.id)
+        } else {
+            selectedJobIDs.insert(job.id)
+        }
+    }
+
+    func toggleAllVisibleJobSelection() {
+        if allVisibleJobsSelected {
+            selectedJobIDs.removeAll()
+        } else {
+            selectedJobIDs = Set(jobs.map(\.id))
+        }
+    }
+
+    func clearSelectedJobSelection() {
+        selectedJobIDs.removeAll()
     }
 
     func showSelectedJobLogs() {
@@ -452,6 +510,33 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func retrySelectedJobs() {
+        let jobs = selectedVisibleJobs.filter(Self.canRetry)
+        Task { [weak self] in
+            await self?.retryJobs(jobs)
+        }
+    }
+
+    func removeSelectedJobs(removeChildren: Bool = true) {
+        let jobs = selectedVisibleJobs.filter(Self.canRemove)
+        Task { [weak self] in
+            await self?.removeJobs(jobs, removeChildren: removeChildren)
+        }
+    }
+
+    func promoteSelectedJobs() {
+        let jobs = selectedVisibleJobs.filter(Self.canPromote)
+        Task { [weak self] in
+            await self?.promoteJobs(jobs)
+        }
+    }
+
+    func addJob(to queueName: String, draft: JobDuplicateDraft) {
+        Task { [weak self] in
+            await self?.addJob(queueName: queueName, draft: draft)
+        }
+    }
+
     func retryJob(_ job: JobSummary) async {
         guard Self.canRetry(job) else { return }
         await performJobAction(.retry, job: job) {
@@ -488,6 +573,21 @@ final class AppModel: ObservableObject {
                 options: options
             )
             return "Duplicated job \(jobID)"
+        }
+    }
+
+    func addJob(queueName: String, draft: JobDuplicateDraft) async {
+        await performJobAction(.add, queueName: queueName) {
+            let data = try Self.parseDuplicateJSON(draft.dataJSON, label: "Data")
+            let options = try Self.parseDuplicateJSON(draft.optionsJSON, label: "Options")
+            let jobID = try await engine.addJob(
+                queueName: queueName,
+                prefix: prefix,
+                name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                data: data,
+                options: options
+            )
+            return "Added job \(jobID)"
         }
     }
 
@@ -568,6 +668,7 @@ final class AppModel: ObservableObject {
             runTotalsByQuery[queryKey] = loadedPage.total
             jobs = loadedPage.jobs
             runTotal = loadedPage.total
+            pruneSelectedJobSelection()
             statusMessage = "Loaded \(loadedPage.jobs.count) runs for \(queueName)"
         case .workers:
             statusMessage = "Loading \(queueName) workers…"
@@ -773,6 +874,85 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func retryJobs(_ jobs: [JobSummary]) async {
+        await performBulkJobAction(.retry, jobs: jobs.filter(Self.canRetry)) { job in
+            try await engine.retryJob(queueName: job.queueName, prefix: prefix, jobID: job.id, state: job.state)
+        }
+    }
+
+    func removeJobs(_ jobs: [JobSummary], removeChildren: Bool) async {
+        await performBulkJobAction(.remove, jobs: jobs.filter(Self.canRemove), clearsSelectedJob: true) { job in
+            try await engine.removeJob(queueName: job.queueName, prefix: prefix, jobID: job.id, removeChildren: removeChildren)
+        }
+    }
+
+    func promoteJobs(_ jobs: [JobSummary]) async {
+        await performBulkJobAction(.promote, jobs: jobs.filter(Self.canPromote)) { job in
+            try await engine.promoteJob(queueName: job.queueName, prefix: prefix, jobID: job.id)
+        }
+    }
+
+    private func performBulkJobAction(
+        _ action: JobActionKind,
+        jobs: [JobSummary],
+        clearsSelectedJob: Bool = false,
+        operation: (JobSummary) async throws -> Void
+    ) async {
+        guard activeJobAction == nil, let queueName = jobs.first?.queueName else { return }
+        beginLoading(.jobAction)
+        activeJobAction = action
+        lastError = nil
+        defer {
+            activeJobAction = nil
+            endLoading(.jobAction)
+        }
+
+        var succeededIDs: Set<String> = []
+        var failures: [String] = []
+        for job in jobs {
+            do {
+                try await operation(job)
+                succeededIDs.insert(job.id)
+            } catch is CancellationError {
+                return
+            } catch {
+                failures.append("\(job.id): \(error.localizedDescription)")
+            }
+        }
+
+        guard !succeededIDs.isEmpty else {
+            if let firstFailure = failures.first {
+                lastError = firstFailure
+                statusMessage = firstFailure
+            }
+            return
+        }
+
+        do {
+            try await refreshRunsAfterMutation(queueName: queueName)
+            selectedJobIDs.subtract(succeededIDs)
+            if clearsSelectedJob, let selectedJob, succeededIDs.contains(selectedJob.id) {
+                resetSelectedJob()
+            } else if let selectedJob, succeededIDs.contains(selectedJob.id) {
+                try await reloadSelectedJobAfterMutation()
+            }
+
+            let actionName = bulkActionName(action)
+            if let firstFailure = failures.first {
+                let message = "\(succeededIDs.count) \(actionName), \(failures.count) failed. First failure: \(firstFailure)"
+                lastError = message
+                statusMessage = message
+            } else {
+                statusMessage = "\(actionName.capitalized) \(succeededIDs.count) jobs"
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = error.localizedDescription
+        }
+    }
+
     private func refreshRunsAfterMutation(queueName: String) async throws {
         let overview = try await engine.getQueueOverview(queueName: queueName, prefix: prefix)
         var updatedOverview = overview
@@ -791,6 +971,21 @@ final class AppModel: ObservableObject {
         if selectedQueue?.name == queueName {
             jobs = loadedPage.jobs
             runTotal = loadedPage.total
+            pruneSelectedJobSelection()
+        }
+    }
+
+    private func pruneSelectedJobSelection() {
+        selectedJobIDs.formIntersection(Set(jobs.map(\.id)))
+    }
+
+    private func bulkActionName(_ action: JobActionKind) -> String {
+        switch action {
+        case .retry: "retried"
+        case .remove: "removed"
+        case .promote: "promoted"
+        case .duplicate: "duplicated"
+        case .add: "added"
         }
     }
 
@@ -1028,6 +1223,7 @@ final class AppModel: ObservableObject {
         let key = runCacheKey(queueName)
         jobs = jobsByQuery[key] ?? []
         runTotal = runTotalsByQuery[key] ?? 0
+        pruneSelectedJobSelection()
     }
 
     private func recordSnapshot(queueName: String, counts: QueueCounts, nativeMetrics: BullMQNativeMetrics? = nil) {

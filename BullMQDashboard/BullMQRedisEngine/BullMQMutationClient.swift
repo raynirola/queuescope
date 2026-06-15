@@ -78,6 +78,33 @@ struct BullMQMutationClient: Sendable {
         return jobID
     }
 
+    func addJob(
+        config: RedisConnectionConfig,
+        queueName: String,
+        prefix: String,
+        name: String,
+        data: AnySendableJSON,
+        options: AnySendableJSON
+    ) async throws -> String {
+        let response = try await run(
+            request: BridgeRequest(
+                redis: BridgeRedisConfig(config),
+                queueName: queueName,
+                prefix: prefix,
+                action: "add",
+                payload: [
+                    "name": name,
+                    "data": data.value,
+                    "options": options.value
+                ]
+            )
+        )
+        guard let jobID = response.result?["jobID"]?.stringValue, !jobID.isEmpty else {
+            throw BullMQDashboardError.redis("BullMQ action bridge did not return an added job id.")
+        }
+        return jobID
+    }
+
     @discardableResult
     private func run(request: BridgeRequest) async throws -> BridgeResponse {
         let requestData = try BridgeJSON.data(from: request.dictionary)

@@ -173,6 +173,11 @@ actor BullMQRedisEngine: BullMQEngine {
         return try await mutationClient.duplicateJob(config: config, queueName: queueName, prefix: prefix, name: name, data: data, options: options)
     }
 
+    func addJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        return try await mutationClient.addJob(config: config, queueName: queueName, prefix: prefix, name: name, data: data, options: options)
+    }
+
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {
         let overview = try await getQueueOverview(queueName: queueName, prefix: prefix)
         let nativeMetrics = try await getNativeMetrics(queueName: queueName, prefix: prefix)

@@ -2,6 +2,9 @@ import SwiftUI
 
 struct JobTableView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var isBulkRemoveConfirmationPresented = false
+    @State private var isAddJobSheetPresented = false
+    @State private var addJobDraft = JobDuplicateDraft(name: "", dataJSON: "{}", optionsJSON: "{}")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -10,6 +13,49 @@ struct JobTableView: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 LoadingSpinnerSlot(isVisible: model.activeLoadingPhases.contains(.runs))
+                if model.selectedVisibleJobCount > 0 {
+                    Text("\(model.selectedVisibleJobCount) selected")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    addJobDraft = JobDuplicateDraft(name: "", dataJSON: "{}", optionsJSON: "{}")
+                    isAddJobSheetPresented = true
+                } label: {
+                    Label("Add job", systemImage: "plus")
+                }
+                .controlSize(.small)
+                .disabled(model.selectedQueue == nil || model.activeJobAction != nil)
+
+                Menu {
+                    Button {
+                        model.retrySelectedJobs()
+                    } label: {
+                        Label("Retry eligible", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(model.selectedBulkRetryCount == 0)
+
+                    Button {
+                        model.promoteSelectedJobs()
+                    } label: {
+                        Label("Promote delayed", systemImage: "arrow.up")
+                    }
+                    .disabled(model.selectedBulkPromoteCount == 0)
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        isBulkRemoveConfirmationPresented = true
+                    } label: {
+                        Label("Remove eligible", systemImage: "trash")
+                    }
+                    .disabled(model.selectedBulkRemoveCount == 0)
+                } label: {
+                    Label("Bulk actions", systemImage: "checklist")
+                }
+                .menuStyle(.button)
+                .controlSize(.small)
+                .disabled(model.selectedVisibleJobCount == 0 || model.activeJobAction != nil)
                 Text(model.runPageRangeText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -31,22 +77,57 @@ struct JobTableView: View {
                 .buttonStyle(.borderless)
                 .controlSize(.small)
             }
-            .frame(height: 20)
+            .frame(height: 28)
+            .alert("Remove selected jobs?", isPresented: $isBulkRemoveConfirmationPresented) {
+                Button("Cancel", role: .cancel) {}
+                Button("Remove", role: .destructive) {
+                    model.removeSelectedJobs(removeChildren: true)
+                }
+            } message: {
+                Text("This removes \(model.selectedBulkRemoveCount) non-active selected jobs and their children from BullMQ. Active or locked jobs may be rejected by BullMQ.")
+            }
+            .sheet(isPresented: $isAddJobSheetPresented) {
+                JobDraftSheet(
+                    title: "Add job",
+                    message: "Add a new job to \(model.selectedQueue?.resolvedDisplayName ?? "this queue").",
+                    submitTitle: "Add",
+                    draft: $addJobDraft,
+                    isSubmitting: model.activeJobAction == .add,
+                    submit: {
+                        guard let queue = model.selectedQueue else { return }
+                        model.addJob(to: queue.name, draft: addJobDraft)
+                        isAddJobSheetPresented = false
+                    },
+                    cancel: {
+                        isAddJobSheetPresented = false
+                    }
+                )
+                .frame(width: 680, height: 620)
+            }
 
             if model.jobs.isEmpty {
                 RunsEmptyState(state: model.selectedState)
             } else {
                 VStack(spacing: 8) {
-                    RunsHeader()
+                    RunsHeader(
+                        allVisibleSelected: model.allVisibleJobsSelected,
+                        toggleSelection: {
+                            model.toggleAllVisibleJobSelection()
+                        }
+                    )
                     ForEach(Array(model.jobs.enumerated()), id: \.element.id) { index, job in
                         RunsRow(
                             job: job,
                             isSelected: model.selectedJob?.id == job.id,
+                            isChecked: model.isJobSelectedForBulk(job),
                             isAlternate: index.isMultiple(of: 2),
                             stateColor: stateColor(job.state),
                             attempts: attemptText(job),
                             duration: durationText(job.duration),
-                            age: ageText(job)
+                            age: ageText(job),
+                            toggleSelection: {
+                                model.toggleJobSelection(job)
+                            }
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -119,14 +200,18 @@ private struct LoadingSpinnerSlot: View {
 private struct RunsRow: View {
     let job: JobSummary
     let isSelected: Bool
+    let isChecked: Bool
     let isAlternate: Bool
     let stateColor: Color
     let attempts: String
     let duration: String
     let age: String
+    let toggleSelection: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
+            SelectionButton(isSelected: isChecked, action: toggleSelection)
+
             ZStack {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(iconFill)
@@ -220,8 +305,12 @@ private struct RunsRow: View {
 }
 
 private struct RunsHeader: View {
+    let allVisibleSelected: Bool
+    let toggleSelection: () -> Void
+
     var body: some View {
         HStack(spacing: 12) {
+            SelectionButton(isSelected: allVisibleSelected, action: toggleSelection)
             Text("")
                 .frame(width: 30)
             Text("Job")
@@ -239,6 +328,24 @@ private struct RunsHeader: View {
     private func headerText(_ text: String) -> some View {
         Text(text)
             .frame(width: 82, alignment: .trailing)
+    }
+}
+
+private struct SelectionButton: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(width: 18, height: 18)
+        .help(isSelected ? "Deselect run" : "Select run")
     }
 }
 
@@ -265,7 +372,7 @@ private struct RunStatusText: View {
     var body: some View {
         Text(state.displayName.lowercased())
             .font(.system(size: 11, weight: .regular, design: .monospaced))
-            .tracking(-0.4)
+            .tracking(0)
             .foregroundStyle(isSelected ? .white.opacity(0.72) : color.opacity(0.88))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
