@@ -3,12 +3,16 @@ import SwiftUI
 
 struct JobInspectorView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var isRemoveConfirmationPresented = false
+    @State private var isDuplicateSheetPresented = false
+    @State private var duplicateDraft = JobDuplicateDraft(name: "", dataJSON: "{}", optionsJSON: "{}")
 
     var body: some View {
         Group {
             if let detail = model.selectedJobDetail {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 14) {
+                        actionHeader(detail)
                         detailRows(detail)
                         DisplaySection(title: "Payload", value: detail.data)
                         DisplaySection(title: "Options", value: detail.options)
@@ -30,9 +34,95 @@ struct JobInspectorView: View {
                 .onChange(of: detail.id) { _, _ in
                     model.stopSelectedJobLogStreaming()
                 }
+                .alert("Remove job?", isPresented: $isRemoveConfirmationPresented) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Remove", role: .destructive) {
+                        model.removeSelectedJob(removeChildren: true)
+                    }
+                } message: {
+                    Text("This removes the job and its children from BullMQ. Active or locked jobs may be rejected by BullMQ.")
+                }
+                .sheet(isPresented: $isDuplicateSheetPresented) {
+                    DuplicateJobSheet(
+                        draft: $duplicateDraft,
+                        isSubmitting: model.activeJobAction == .duplicate,
+                        submit: {
+                            model.duplicateSelectedJob(from: duplicateDraft)
+                            isDuplicateSheetPresented = false
+                        },
+                        cancel: {
+                            isDuplicateSheetPresented = false
+                        }
+                    )
+                    .frame(width: 680, height: 620)
+                }
             } else {
                 EmptyView()
             }
+        }
+    }
+
+    private func actionHeader(_ detail: JobDetail) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(detail.fields["name"] ?? model.selectedJob?.name ?? "Job")
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(detail.state.displayName)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if model.activeJobAction != nil {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Menu {
+                Button {
+                    model.retrySelectedJob()
+                } label: {
+                    Label("Retry", systemImage: "arrow.counterclockwise")
+                }
+                .disabled(!AppModel.canRetry(model.selectedJob))
+
+                Button {
+                    model.promoteSelectedJob()
+                } label: {
+                    Label("Promote", systemImage: "arrow.up")
+                }
+                .disabled(!AppModel.canPromote(model.selectedJob))
+
+                Button {
+                    duplicateDraft = model.duplicateDraft(for: detail)
+                    isDuplicateSheetPresented = true
+                } label: {
+                    Label("Duplicate", systemImage: "doc.on.doc")
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    isRemoveConfirmationPresented = true
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+                .disabled(!AppModel.canRemove(model.selectedJob))
+            } label: {
+                Label("Job actions", systemImage: "ellipsis.circle")
+            }
+            .menuStyle(.button)
+            .controlSize(.small)
+            .disabled(model.activeJobAction != nil)
+            .help("Job actions")
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.92), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(0.06))
         }
     }
 
@@ -127,6 +217,111 @@ private struct StackTraceSection: View {
 
     private var visibleStacktrace: [String] {
         Array(stacktrace.prefix(visibleCount))
+    }
+}
+
+private struct DuplicateJobSheet: View {
+    @Binding var draft: JobDuplicateDraft
+    let isSubmitting: Bool
+    let submit: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Duplicate job")
+                    .font(.headline)
+                Text("Review the payload and options before adding a new job.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Name")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    TextField("Job name", text: $draft.name)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                DuplicateJSONEditor(title: "Data", text: $draft.dataJSON)
+                    .frame(minHeight: 190)
+
+                DuplicateJSONEditor(title: "Options", text: $draft.optionsJSON)
+                    .frame(minHeight: 190)
+
+                if let validationMessage {
+                    Text(validationMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(18)
+
+            Spacer(minLength: 0)
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button {
+                    submit()
+                } label: {
+                    if isSubmitting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Duplicate")
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(validationMessage != nil || isSubmitting)
+            }
+            .padding(18)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var validationMessage: String? {
+        if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Name is required."
+        }
+        do {
+            _ = try AppModel.parseDuplicateJSON(draft.dataJSON, label: "Data")
+            _ = try AppModel.parseDuplicateJSON(draft.optionsJSON, label: "Options")
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+}
+
+private struct DuplicateJSONEditor: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            TextEditor(text: $text)
+                .font(.system(size: 11, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.08))
+                }
+        }
     }
 }
 

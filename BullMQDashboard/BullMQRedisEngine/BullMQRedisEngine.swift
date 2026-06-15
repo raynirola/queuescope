@@ -3,6 +3,7 @@ import Foundation
 actor BullMQRedisEngine: BullMQEngine {
     private var redis: RedisRESPClient?
     private var config: RedisConnectionConfig?
+    private let mutationClient = BullMQMutationClient()
     private let scanLimit = 2_000
     private let scanPageLimit = 500
     private let jobSummaryFields = [
@@ -150,6 +151,26 @@ actor BullMQRedisEngine: BullMQEngine {
 
         let response = try await command(["LRANGE", logsKey, String(lowerBound), String(upperBound)])
         return makeJobLogs(total: total, startIndex: lowerBound, response: response)
+    }
+
+    func retryJob(queueName: String, prefix: String, jobID: String, state: BullMQState) async throws {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        try await mutationClient.retryJob(config: config, queueName: queueName, prefix: prefix, jobID: jobID, state: state)
+    }
+
+    func removeJob(queueName: String, prefix: String, jobID: String, removeChildren: Bool) async throws {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        try await mutationClient.removeJob(config: config, queueName: queueName, prefix: prefix, jobID: jobID, removeChildren: removeChildren)
+    }
+
+    func promoteJob(queueName: String, prefix: String, jobID: String) async throws {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        try await mutationClient.promoteJob(config: config, queueName: queueName, prefix: prefix, jobID: jobID)
+    }
+
+    func duplicateJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        return try await mutationClient.duplicateJob(config: config, queueName: queueName, prefix: prefix, name: name, data: data, options: options)
     }
 
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {

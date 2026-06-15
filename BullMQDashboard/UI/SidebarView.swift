@@ -543,19 +543,6 @@ struct ConnectionManagerView: View {
                     .font(.callout.monospaced())
             }
 
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "lock.shield.fill")
-                    .foregroundStyle(.green)
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.top, 1)
-                Text("Passwords stay in macOS Keychain.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(10)
-            .background(.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("BullMQ prefix")
@@ -574,9 +561,9 @@ struct ConnectionManagerView: View {
                 Button {
                     model.saveCurrentProfile()
                 } label: {
-                    Label("Save", systemImage: "key")
+                    Label("Save", systemImage: "tray.and.arrow.down")
                 }
-                .help("Save profile and store the full URL securely in Keychain")
+                .help("Save profile")
 
                 Button {
                     Task {
@@ -703,7 +690,7 @@ private struct ProfileRow: View {
                         .padding(.vertical, 3)
                         .background(tagColor.opacity(0.10), in: Capsule())
                 }
-                Text("\(profile.prefix) · \(profile.urlWithoutSecret)")
+                Text("\(profile.prefix) · \(profile.displayURL)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

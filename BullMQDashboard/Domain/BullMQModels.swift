@@ -1,5 +1,13 @@
 import Foundation
 
+struct AnySendableJSON: @unchecked Sendable {
+    var value: Any
+
+    init(_ value: Any) {
+        self.value = value
+    }
+}
+
 enum BullMQState: String, CaseIterable, Identifiable, Sendable {
     case waiting
     case active
@@ -30,14 +38,18 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
     var id: UUID
     var name: String
     var tag: String
-    var urlWithoutSecret: String
+    var redisURL: String
     var prefix: String
 
-    init(id: UUID = UUID(), name: String, tag: String = "local", urlWithoutSecret: String, prefix: String = "bull") {
+    var displayURL: String {
+        RedisURLParser.redacted(redisURL)
+    }
+
+    init(id: UUID = UUID(), name: String, tag: String = "local", redisURL: String, prefix: String = "bull") {
         self.id = id
         self.name = name
         self.tag = tag
-        self.urlWithoutSecret = urlWithoutSecret
+        self.redisURL = redisURL
         self.prefix = prefix
     }
 
@@ -46,8 +58,27 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         tag = try container.decodeIfPresent(String.self, forKey: .tag) ?? "local"
-        urlWithoutSecret = try container.decode(String.self, forKey: .urlWithoutSecret)
+        redisURL = try container.decodeIfPresent(String.self, forKey: .redisURL)
+            ?? container.decode(String.self, forKey: .urlWithoutSecret)
         prefix = try container.decode(String.self, forKey: .prefix)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(tag, forKey: .tag)
+        try container.encode(redisURL, forKey: .redisURL)
+        try container.encode(prefix, forKey: .prefix)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case tag
+        case redisURL
+        case urlWithoutSecret
+        case prefix
     }
 }
 

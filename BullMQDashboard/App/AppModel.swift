@@ -8,6 +8,20 @@ enum LoadingPhase: String, Hashable {
     case schedulers
     case metrics
     case jobDetail
+    case jobAction
+}
+
+enum JobActionKind: String, Sendable {
+    case retry
+    case remove
+    case promote
+    case duplicate
+}
+
+struct JobDuplicateDraft: Equatable, Sendable {
+    var name: String
+    var dataJSON: String
+    var optionsJSON: String
 }
 
 @MainActor
@@ -29,6 +43,7 @@ final class AppModel: ObservableObject {
     @Published var selectedJobLogs: JobLogs = .empty
     @Published var isLoadingSelectedJobLogs = false
     @Published var isStreamingSelectedJobLogs = false
+    @Published var activeJobAction: JobActionKind?
     @Published var workers: [WorkerSummary] = []
     @Published var schedulers: [SchedulerSummary] = []
     @Published var metricTimingJobs: [JobSummary] = []
@@ -44,7 +59,6 @@ final class AppModel: ObservableObject {
 
     private let engine: BullMQEngine
     private let profileStore: ConnectionProfileStore
-    private let credentialStore: KeychainCredentialStore
     private let snapshotStore: MetricSnapshotStore
     private let queueNameStore: QueueNameStore
     private let queueMetadataStore: QueueMetadataStore
@@ -69,7 +83,6 @@ final class AppModel: ObservableObject {
     init(
         engine: BullMQEngine = BullMQRedisEngine(),
         profileStore: ConnectionProfileStore = ConnectionProfileStore(),
-        credentialStore: KeychainCredentialStore = KeychainCredentialStore(),
         snapshotStore: MetricSnapshotStore = MetricSnapshotStore(),
         queueNameStore: QueueNameStore = QueueNameStore(),
         queueMetadataStore: QueueMetadataStore = QueueMetadataStore(),
@@ -77,7 +90,6 @@ final class AppModel: ObservableObject {
     ) {
         self.engine = engine
         self.profileStore = profileStore
-        self.credentialStore = credentialStore
         self.snapshotStore = snapshotStore
         self.queueNameStore = queueNameStore
         self.queueMetadataStore = queueMetadataStore
@@ -144,6 +156,7 @@ final class AppModel: ObservableObject {
         selectedJobLogs = .empty
         isLoadingSelectedJobLogs = false
         isStreamingSelectedJobLogs = false
+        activeJobAction = nil
         activeLoadingPhases = []
         jobsByQuery = [:]
         runTotalsByQuery = [:]
@@ -160,10 +173,9 @@ final class AppModel: ObservableObject {
             let profile = RedisConnectionProfile(
                 name: connectionProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? parsed.name : connectionProfileName.trimmingCharacters(in: .whitespacesAndNewlines),
                 tag: connectionProfileTag,
-                urlWithoutSecret: RedisURLParser.redacted(redisURL),
+                redisURL: redisURL,
                 prefix: parsed.prefix
             )
-            try credentialStore.save(secret: redisURL, for: profile.id)
             profiles.append(profile)
             profileStore.save(profiles)
             statusMessage = "Saved \(profile.name)"
@@ -173,21 +185,13 @@ final class AppModel: ObservableObject {
     }
 
     func connect(profile: RedisConnectionProfile) async {
-        do {
-            guard let secret = try credentialStore.read(for: profile.id) else {
-                lastError = "No Keychain credential found for \(profile.name)."
-                return
-            }
-            redisURL = secret
-            prefix = profile.prefix
-            connectionProfileName = profile.name
-            connectionProfileTag = profile.tag
-            await connect()
-            if isConnected {
-                profileStore.saveLastActiveProfileID(profile.id)
-            }
-        } catch {
-            lastError = error.localizedDescription
+        redisURL = profile.redisURL
+        prefix = profile.prefix
+        connectionProfileName = profile.name
+        connectionProfileTag = profile.tag
+        await connect()
+        if isConnected {
+            profileStore.saveLastActiveProfileID(profile.id)
         }
     }
 
@@ -195,12 +199,15 @@ final class AppModel: ObservableObject {
         guard !isConnected, let profile = lastActiveProfile() else { return false }
         statusMessage = "Connecting to \(profile.name)…"
         await connect(profile: profile)
+        if !isConnected {
+            statusMessage = "Not connected"
+            profileStore.clearLastActiveProfileID()
+        }
         return isConnected
     }
 
     func deleteProfile(_ profile: RedisConnectionProfile) {
         profiles.removeAll { $0.id == profile.id }
-        credentialStore.delete(for: profile.id)
         profileStore.save(profiles)
         if profileStore.loadLastActiveProfileID() == profile.id {
             if let replacementProfile = profiles.last {
@@ -417,6 +424,112 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func retrySelectedJob() {
+        guard let selectedJob else { return }
+        Task { [weak self] in
+            await self?.retryJob(selectedJob)
+        }
+    }
+
+    func removeSelectedJob(removeChildren: Bool = true) {
+        guard let selectedJob else { return }
+        Task { [weak self] in
+            await self?.removeJob(selectedJob, removeChildren: removeChildren)
+        }
+    }
+
+    func promoteSelectedJob() {
+        guard let selectedJob else { return }
+        Task { [weak self] in
+            await self?.promoteJob(selectedJob)
+        }
+    }
+
+    func duplicateSelectedJob(from draft: JobDuplicateDraft) {
+        guard let selectedQueue else { return }
+        Task { [weak self] in
+            await self?.duplicateJob(queueName: selectedQueue.name, draft: draft)
+        }
+    }
+
+    func retryJob(_ job: JobSummary) async {
+        guard Self.canRetry(job) else { return }
+        await performJobAction(.retry, job: job) {
+            try await engine.retryJob(queueName: job.queueName, prefix: prefix, jobID: job.id, state: job.state)
+            return "Retried job \(job.id)"
+        }
+    }
+
+    func removeJob(_ job: JobSummary, removeChildren: Bool = true) async {
+        guard Self.canRemove(job) else { return }
+        await performJobAction(.remove, job: job, clearsSelection: true) {
+            try await engine.removeJob(queueName: job.queueName, prefix: prefix, jobID: job.id, removeChildren: removeChildren)
+            return "Removed job \(job.id)"
+        }
+    }
+
+    func promoteJob(_ job: JobSummary) async {
+        guard Self.canPromote(job) else { return }
+        await performJobAction(.promote, job: job) {
+            try await engine.promoteJob(queueName: job.queueName, prefix: prefix, jobID: job.id)
+            return "Promoted job \(job.id)"
+        }
+    }
+
+    func duplicateJob(queueName: String, draft: JobDuplicateDraft) async {
+        await performJobAction(.duplicate, queueName: queueName) {
+            let data = try Self.parseDuplicateJSON(draft.dataJSON, label: "Data")
+            let options = try Self.parseDuplicateJSON(draft.optionsJSON, label: "Options")
+            let jobID = try await engine.duplicateJob(
+                queueName: queueName,
+                prefix: prefix,
+                name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                data: data,
+                options: options
+            )
+            return "Duplicated job \(jobID)"
+        }
+    }
+
+    func duplicateDraft(for detail: JobDetail) -> JobDuplicateDraft {
+        Self.duplicateDraft(for: detail)
+    }
+
+    static func canRetry(_ job: JobSummary?) -> Bool {
+        guard let job else { return false }
+        return job.state == .failed || job.state == .completed
+    }
+
+    static func canPromote(_ job: JobSummary?) -> Bool {
+        job?.state == .delayed
+    }
+
+    static func canRemove(_ job: JobSummary?) -> Bool {
+        guard let job else { return false }
+        return job.state != .active
+    }
+
+    static func duplicateDraft(for detail: JobDetail) -> JobDuplicateDraft {
+        JobDuplicateDraft(
+            name: detail.fields["name"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? detail.fields["name"]! : "(unnamed)",
+            dataJSON: prettyDuplicateJSON(detail.fields["data"], fallback: "{}"),
+            optionsJSON: duplicateOptionsJSON(detail.fields["opts"])
+        )
+    }
+
+    static func parseDuplicateJSON(_ rawValue: String, label: String) throws -> AnySendableJSON {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw BullMQDashboardError.redis("\(label) must be valid JSON.")
+        }
+        do {
+            let data = Data(trimmed.utf8)
+            return AnySendableJSON(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
+        } catch {
+            throw BullMQDashboardError.redis("\(label) must be valid JSON: \(error.localizedDescription)")
+        }
+    }
+
     private func refreshSelectedQueueThrowing(for view: QueueWorkspaceView, requestID: Int) async throws {
         guard let selectedQueue else { return }
         let queueName = selectedQueue.name
@@ -602,6 +715,100 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func performJobAction(
+        _ action: JobActionKind,
+        job: JobSummary,
+        clearsSelection: Bool = false,
+        operation: () async throws -> String
+    ) async {
+        guard activeJobAction == nil else { return }
+        beginLoading(.jobAction)
+        activeJobAction = action
+        lastError = nil
+        defer {
+            activeJobAction = nil
+            endLoading(.jobAction)
+        }
+
+        do {
+            let message = try await operation()
+            try await refreshRunsAfterMutation(queueName: job.queueName)
+            if clearsSelection {
+                resetSelectedJob()
+            } else if selectedJob?.id == job.id {
+                try await reloadSelectedJobAfterMutation()
+            }
+            statusMessage = message
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func performJobAction(
+        _ action: JobActionKind,
+        queueName: String,
+        operation: () async throws -> String
+    ) async {
+        guard activeJobAction == nil else { return }
+        beginLoading(.jobAction)
+        activeJobAction = action
+        lastError = nil
+        defer {
+            activeJobAction = nil
+            endLoading(.jobAction)
+        }
+
+        do {
+            let message = try await operation()
+            try await refreshRunsAfterMutation(queueName: queueName)
+            statusMessage = message
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshRunsAfterMutation(queueName: String) async throws {
+        let overview = try await engine.getQueueOverview(queueName: queueName, prefix: prefix)
+        var updatedOverview = overview
+        updatedOverview.displayName = selectedQueue?.name == queueName ? selectedQueue?.displayName : overview.displayName
+        updatedOverview.groupName = selectedQueue?.name == queueName ? selectedQueue?.groupName : overview.groupName
+        replaceQueue(updatedOverview)
+        if selectedQueue?.name == queueName {
+            selectedQueue = updatedOverview
+        }
+        persistCurrentQueueMetadata()
+
+        let loadedPage = try await loadJobs(queueName: queueName)
+        let queryKey = runCacheKey(queueName)
+        jobsByQuery[queryKey] = loadedPage.jobs
+        runTotalsByQuery[queryKey] = loadedPage.total
+        if selectedQueue?.name == queueName {
+            jobs = loadedPage.jobs
+            runTotal = loadedPage.total
+        }
+    }
+
+    private func reloadSelectedJobAfterMutation() async throws {
+        guard let selectedJob else { return }
+        if let refreshedJob = jobs.first(where: { $0.id == selectedJob.id }) {
+            self.selectedJob = refreshedJob
+        }
+        selectedJobDetail = try await engine.getJobDetail(
+            queueName: selectedJob.queueName,
+            prefix: prefix,
+            jobID: selectedJob.id,
+            state: selectedJob.state
+        )
+        selectedJobLogs = .empty
+        stopSelectedJobLogStreaming()
+    }
+
     private func mergeLogs(_ current: JobLogs, with incoming: JobLogs) -> JobLogs {
         Self.mergedLogs(current, with: incoming)
     }
@@ -656,6 +863,41 @@ final class AppModel: ObservableObject {
             perStateLimit: 120,
             totalLimit: 200
         )
+    }
+
+    private static func prettyDuplicateJSON(_ rawValue: String?, fallback: String) -> String {
+        guard let rawValue, !rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return fallback
+        }
+        do {
+            let object = try JSONSerialization.jsonObject(with: Data(rawValue.utf8), options: [.fragmentsAllowed])
+            guard JSONSerialization.isValidJSONObject(object) else {
+                return rawValue
+            }
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+            return String(data: data, encoding: .utf8) ?? rawValue
+        } catch {
+            return rawValue
+        }
+    }
+
+    private static func duplicateOptionsJSON(_ rawValue: String?) -> String {
+        guard let rawValue, !rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "{}"
+        }
+        do {
+            let object = try JSONSerialization.jsonObject(with: Data(rawValue.utf8), options: [])
+            if var options = object as? [String: Any] {
+                options.removeValue(forKey: "jobId")
+                options.removeValue(forKey: "repeat")
+                guard JSONSerialization.isValidJSONObject(options) else { return "{}" }
+                let data = try JSONSerialization.data(withJSONObject: options, options: [.prettyPrinted, .sortedKeys])
+                return String(data: data, encoding: .utf8) ?? "{}"
+            }
+        } catch {
+            return "{}"
+        }
+        return "{}"
     }
 
     private func replaceQueue(_ queue: QueueSummary) {
@@ -731,6 +973,7 @@ final class AppModel: ObservableObject {
         selectedJobLogs = .empty
         isLoadingSelectedJobLogs = false
         isStreamingSelectedJobLogs = false
+        activeJobAction = nil
         jobsByQuery = [:]
         runTotalsByQuery = [:]
         workersByQueue = [:]
