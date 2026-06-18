@@ -339,15 +339,17 @@ private struct MetricsPanel: View {
     let queue: QueueSummary
     var style: MetricsPanelStyle = .compact
 
+    @State private var throughputTimeframe: ThroughputMetricTimeframe = .oneDay
+
     @ViewBuilder
     var body: some View {
         let snapshots = recentSnapshots
         let nativeMetrics = latestNativeMetrics(from: snapshots)
-        let throughput = nativeMetrics.map(NativeThroughputSummary.init(metrics:))
+        let throughput = nativeMetrics.map { NativeThroughputSummary(metrics: $0, timeframe: throughputTimeframe) }
         let terminalMetrics = nativeMetrics.map(NativeTerminalSummary.init(metrics:))
         let displayCounts = countsForMetrics(terminalMetrics)
         let sampleCount = nativeMetrics?.sampleCount ?? 0
-        let timing = MetricTimingSummary(jobs: model.metricTimingJobs)
+        let timing = MetricTimingSummary(jobs: model.metricTimingJobs, timeframe: throughputTimeframe)
 
         if style == .detailed {
             VStack(alignment: .leading, spacing: 34) {
@@ -404,7 +406,7 @@ private struct MetricsPanel: View {
                 }
 
                 MetricSettingsSection(
-                    title: "Throughput",
+                    title: "Throughput · jobs/min",
                     subtitle: "Worker metrics per minute",
                     icon: "speedometer",
                     tint: throughput?.failedPerMinute ?? 0 > 0 ? .red : .blue,
@@ -412,6 +414,12 @@ private struct MetricsPanel: View {
                 ) {
                     if let throughput, let nativeMetrics {
                         VStack(spacing: 0) {
+                            HStack {
+                                Spacer()
+                                throughputTimeframePicker
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.top, 14)
                             SignalMetricRow(
                                 title: "Completed throughput",
                                 value: throughput.completedPerMinute.compactRateDisplay,
@@ -436,7 +444,12 @@ private struct MetricsPanel: View {
                                 tint: throughput.totalPerMinute > 0 ? .blue : .secondary
                             )
                             Divider().padding(.leading, 58)
-                            ThroughputMetricChart(metrics: nativeMetrics, timing: timing, compact: false)
+                            ThroughputMetricChart(
+                                metrics: nativeMetrics,
+                                timing: timing,
+                                timeframe: $throughputTimeframe,
+                                compact: false
+                            )
                                 .padding(14)
                         }
                     } else {
@@ -498,7 +511,17 @@ private struct MetricsPanel: View {
                 }
 
                 MetricOverviewCard {
-                    MetricsSection(title: "Throughput", detail: "") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Throughput · jobs/min")
+                                .font(.caption.weight(.semibold))
+                                .textCase(.uppercase)
+                                .tracking(2.6)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            throughputTimeframePicker
+                        }
+
                         if let throughput, let nativeMetrics {
                             VStack(spacing: 12) {
                                 LazyVGrid(columns: metricColumns, spacing: 10) {
@@ -517,7 +540,12 @@ private struct MetricsPanel: View {
                                         tint: .red
                                     )
                                 }
-                                ThroughputMetricChart(metrics: nativeMetrics, timing: timing, compact: true)
+                                ThroughputMetricChart(
+                                    metrics: nativeMetrics,
+                                    timing: timing,
+                                    timeframe: $throughputTimeframe,
+                                    compact: true
+                                )
                             }
                         } else {
                             SectionEmptyState(
@@ -655,6 +683,17 @@ private struct MetricsPanel: View {
         }
     }
 
+    private var throughputTimeframePicker: some View {
+        Picker("Timeframe", selection: $throughputTimeframe) {
+            ForEach(ThroughputMetricTimeframe.allCases) { timeframe in
+                Text(timeframe.rawValue).tag(timeframe)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 330)
+    }
+
     private func percentText(_ value: Double) -> String {
         let percent = value * 100
         if percent >= 10 || percent.rounded(.down) == percent {
@@ -670,29 +709,26 @@ private enum MetricsPanelStyle {
 }
 
 private struct NativeThroughputSummary {
-    private static let recentWindowBucketCount = 15
-
     let completedPerMinute: Double
     let failedPerMinute: Double
     let totalPerMinute: Double
     let bucketCount: Int
+    let timeframe: ThroughputMetricTimeframe
 
     var windowCaption: String {
-        if bucketCount == Self.recentWindowBucketCount {
-            return "Last \(bucketCount) min"
-        }
         if bucketCount == 1 {
             return "Latest minute"
         }
-        return "Latest \(bucketCount) min"
+        return bucketCount == timeframe.bucketCount ? timeframe.label : "Latest \(bucketCount) min"
     }
 
-    init(metrics: BullMQNativeMetrics) {
-        let rate = metrics.throughputRate(windowBucketCount: Self.recentWindowBucketCount)
+    init(metrics: BullMQNativeMetrics, timeframe: ThroughputMetricTimeframe) {
+        let rate = metrics.throughputRate(windowBucketCount: timeframe.bucketCount)
         completedPerMinute = rate.completedPerMinute
         failedPerMinute = rate.failedPerMinute
         totalPerMinute = rate.totalPerMinute
         bucketCount = rate.bucketCount
+        self.timeframe = timeframe
     }
 }
 
@@ -724,6 +760,9 @@ private enum ThroughputMetricSeries: String, CaseIterable, Identifiable {
 
 private struct ThroughputMetricPoint: Identifiable {
     let bucketIndex: Int
+    let bucketEndIndex: Int
+    let completed: Int
+    let failed: Int
     let completedPerMinute: Double
     let failedPerMinute: Double
 
@@ -733,27 +772,36 @@ private struct ThroughputMetricPoint: Identifiable {
 
 private enum ThroughputMetricTimeframe: String, CaseIterable, Identifiable {
     case oneHour = "1h"
+    case threeHours = "3h"
+    case sixHours = "6h"
+    case twelveHours = "12h"
     case oneDay = "1d"
     case oneWeek = "1w"
-    case fourWeeks = "4w"
+    case oneMonth = "1m"
 
     var id: String { rawValue }
 
     var bucketCount: Int {
         switch self {
         case .oneHour: 60
+        case .threeHours: 180
+        case .sixHours: 360
+        case .twelveHours: 720
         case .oneDay: 1_440
         case .oneWeek: 10_080
-        case .fourWeeks: 40_320
+        case .oneMonth: 40_320
         }
     }
 
     var label: String {
         switch self {
         case .oneHour: "Last hour"
+        case .threeHours: "Last 3 hours"
+        case .sixHours: "Last 6 hours"
+        case .twelveHours: "Last 12 hours"
         case .oneDay: "Last day"
         case .oneWeek: "Last week"
-        case .fourWeeks: "Last 4 weeks"
+        case .oneMonth: "Last month"
         }
     }
 }
@@ -762,7 +810,9 @@ private struct MetricTimingSummary {
     let p50Wait: TimeInterval?
     let p95Duration: TimeInterval?
 
-    init(jobs: [JobSummary]) {
+    init(jobs: [JobSummary], timeframe: ThroughputMetricTimeframe) {
+        let cutoff = Date().addingTimeInterval(-TimeInterval(timeframe.bucketCount * 60))
+        let jobs = jobs.filter { ($0.finishedOn ?? $0.processedOn ?? $0.timestamp).map { $0 >= cutoff } ?? false }
         p50Wait = Self.percentile(
             jobs.compactMap { job in
                 guard let timestamp = job.timestamp, let processedOn = job.processedOn else { return nil }
@@ -787,19 +837,23 @@ private struct MetricTimingSummary {
 private struct ThroughputMetricChart: View {
     let metrics: BullMQNativeMetrics
     let timing: MetricTimingSummary
+    @Binding var timeframe: ThroughputMetricTimeframe
     var compact = false
 
-    @State private var timeframe: ThroughputMetricTimeframe = .oneHour
+    @State private var selectedPointID: Int?
 
     private var visibleBucketCount: Int {
         min(metrics.sampleCount, timeframe.bucketCount)
+    }
+
+    private var groupSize: Int {
+        max(1, Int(ceil(Double(visibleBucketCount) / Double(compact ? 48 : 64))))
     }
 
     private var points: [ThroughputMetricPoint] {
         let bucketCount = visibleBucketCount
         guard bucketCount > 0 else { return [] }
 
-        let groupSize = max(1, Int(ceil(Double(bucketCount) / Double(compact ? 48 : 64))))
         return stride(from: 0, to: bucketCount, by: groupSize).map { start in
             let end = min(start + groupSize, bucketCount)
             let completed = (start..<end).reduce(0) { total, bucketIndex in
@@ -810,6 +864,9 @@ private struct ThroughputMetricChart: View {
             }
             return ThroughputMetricPoint(
                 bucketIndex: start,
+                bucketEndIndex: end,
+                completed: completed,
+                failed: failed,
                 completedPerMinute: Double(completed) / Double(end - start),
                 failedPerMinute: Double(failed) / Double(end - start)
             )
@@ -823,6 +880,11 @@ private struct ThroughputMetricChart: View {
     private var yDomain: ClosedRange<Double> {
         let peak = activePoints.map { max($0.completedPerMinute, $0.failedPerMinute) }.max() ?? 0
         return 0...Double(max(1, peak))
+    }
+
+    private var xAxisMarks: [Int] {
+        guard visibleBucketCount > 1 else { return [0] }
+        return [0, visibleBucketCount / 2, visibleBucketCount - 1]
     }
 
     var body: some View {
@@ -850,10 +912,34 @@ private struct ThroughputMetricChart: View {
                     )
                     .foregroundStyle(.red)
                     .position(by: .value("Series", ThroughputMetricSeries.failed.rawValue))
+
+                    if selectedPointID == point.id {
+                        RuleMark(x: .value("Selected bucket", point.bucketIndex))
+                            .foregroundStyle(.secondary.opacity(0.45))
+                            .annotation(position: .top, alignment: tooltipAlignment(for: point)) {
+                                ThroughputMetricTooltip(
+                                    time: bucketRangeLabel(point),
+                                    completed: point.completed,
+                                    failed: point.failed
+                                )
+                            }
+                    }
                 }
                 .chartXScale(domain: 0...max(visibleBucketCount - 1, 1))
                 .chartYScale(domain: yDomain)
-                .chartXAxis(.hidden)
+                .chartXAxis {
+                    AxisMarks(values: xAxisMarks) { value in
+                        AxisGridLine()
+                            .foregroundStyle(Color.primary.opacity(0.04))
+                        AxisValueLabel {
+                            if let intValue = value.as(Int.self) {
+                                Text(axisTimeLabel(bucketIndex: intValue))
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
                 .chartYAxis {
                     AxisMarks(position: .trailing, values: .automatic(desiredCount: compact ? 2 : 4)) { value in
                         AxisGridLine()
@@ -865,6 +951,28 @@ private struct ThroughputMetricChart: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        Rectangle()
+                            .fill(.clear)
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let location):
+                                    updateSelectedBucket(location: location, proxy: proxy, geometry: geometry)
+                                case .ended:
+                                    selectedPointID = nil
+                                }
+                            }
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { value in
+                                        updateSelectedBucket(location: value.location, proxy: proxy, geometry: geometry)
+                                    }
+                                    .onEnded { _ in selectedPointID = nil }
+                            )
                     }
                 }
                 .frame(height: compact ? 118 : 190)
@@ -879,29 +987,15 @@ private struct ThroughputMetricChart: View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Throughput · jobs/min")
-                        .font(.caption.weight(.semibold))
-                        .textCase(.uppercase)
-                        .tracking(2.6)
-                        .foregroundStyle(.secondary)
                     Text("\(timeframe.label) · \(visibleBucketCount.formatted()) buckets")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
-                VStack(alignment: .trailing, spacing: 9) {
-                    chartLegend
-                    timeframePicker
-                }
+                chartLegend
             }
             VStack(alignment: .leading, spacing: 9) {
-                Text("Throughput · jobs/min")
-                    .font(.caption.weight(.semibold))
-                    .textCase(.uppercase)
-                    .tracking(2.6)
-                    .foregroundStyle(.secondary)
                 chartLegend
-                timeframePicker
                 Text("\(timeframe.label) · \(visibleBucketCount.formatted()) buckets")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -916,15 +1010,44 @@ private struct ThroughputMetricChart: View {
         }
     }
 
-    private var timeframePicker: some View {
-        Picker("Timeframe", selection: $timeframe) {
-            ForEach(ThroughputMetricTimeframe.allCases) { timeframe in
-                Text(timeframe.rawValue).tag(timeframe)
-            }
+    private func axisTimeLabel(bucketIndex: Int) -> String {
+        let minutesAgo = max(0, visibleBucketCount - bucketIndex - 1)
+        if minutesAgo == 0 { return "now" }
+        return "\(TimeInterval(minutesAgo * 60).compactDurationDisplay) ago"
+    }
+
+    private func bucketRangeLabel(_ point: ThroughputMetricPoint) -> String {
+        let newestMinuteAgo = max(0, visibleBucketCount - point.bucketEndIndex)
+        let oldestMinuteAgo = max(0, visibleBucketCount - point.bucketIndex - 1)
+        let now = Date()
+        let start = now.addingTimeInterval(-TimeInterval(oldestMinuteAgo * 60))
+        let end = now.addingTimeInterval(-TimeInterval(newestMinuteAgo * 60))
+        if newestMinuteAgo == oldestMinuteAgo {
+            return timestampLabel(start)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: compact ? 154 : 192)
+        return "\(timestampLabel(start)) - \(timestampLabel(end))"
+    }
+
+    private func tooltipAlignment(for point: ThroughputMetricPoint) -> Alignment {
+        point.bucketIndex > visibleBucketCount / 2 ? .trailing : .leading
+    }
+
+    private func timestampLabel(_ date: Date) -> String {
+        if timeframe.bucketCount <= ThroughputMetricTimeframe.oneDay.bucketCount {
+            return date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).second(.twoDigits))
+        }
+        return date.formatted(.dateTime.month(.wide).day().hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+    }
+
+    private func updateSelectedBucket(location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) {
+        guard let frame = proxy.plotFrame else { return }
+        let x = location.x - geometry[frame].origin.x
+        guard let bucket = proxy.value(atX: x, as: Int.self) else { return }
+        let clampedBucket = min(max(bucket, 0), max(visibleBucketCount - 1, 0))
+        let pointID = min((clampedBucket / groupSize) * groupSize, max(visibleBucketCount - 1, 0))
+        if selectedPointID != pointID {
+            selectedPointID = pointID
+        }
     }
 
     private func bucketValue(_ data: [Int], bucketIndex: Int, bucketCount: Int) -> Int {
@@ -974,6 +1097,31 @@ private struct TimingStatBox: View {
         .overlay {
             RoundedRectangle(cornerRadius: 4)
                 .strokeBorder(Color.primary.opacity(0.08))
+        }
+    }
+}
+
+private struct ThroughputMetricTooltip: View {
+    let time: String
+    let completed: Int
+    let failed: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(time)
+                .font(.caption2.weight(.semibold))
+            Text("Failed \(failed.compactCountDisplay)")
+                .foregroundStyle(.red)
+            Text("Completed \(completed.compactCountDisplay)")
+                .foregroundStyle(.green)
+        }
+        .font(.caption2.monospacedDigit())
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.96), in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.primary.opacity(0.055))
         }
     }
 }
