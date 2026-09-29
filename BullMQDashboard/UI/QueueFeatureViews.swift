@@ -5,7 +5,7 @@ struct QueueRefreshControls: View {
     @State private var confirmPause = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 if !model.isConnected {
                     Label("Disconnected", systemImage: "bolt.slash").foregroundStyle(.red)
@@ -27,26 +27,28 @@ struct QueueRefreshControls: View {
                 }
             }
             .font(.caption)
-            Spacer()
-            if model.isReadOnly { Label("Read-only", systemImage: "lock").font(.caption) }
-            Picker("Refresh", selection: Binding(get: { model.refreshInterval }, set: { model.setRefreshInterval($0) })) {
-                Text("Manual").tag(0)
-                Text("Every 5s").tag(5)
-                Text("Every 15s").tag(15)
-                Text("Every 30s").tag(30)
-                Text("Every 60s").tag(60)
-            }.frame(width: 155)
-            Button { Task { await model.refreshSelectedQueue() } } label: { Image(systemName: "arrow.clockwise") }
-                .help("Refresh now").disabled(model.isLoading || !model.isConnected)
-            if let queue = model.selectedQueue {
-                Button(queue.isPaused ? "Resume queue" : "Pause queue") { confirmPause = true }
-                    .disabled(!model.canWrite || model.isLoading)
-                    .alert(queue.isPaused ? "Resume this queue?" : "Pause this queue?", isPresented: $confirmPause) {
-                        Button("Cancel", role: .cancel) {}
-                        Button(queue.isPaused ? "Resume" : "Pause") { Task { await model.setSelectedQueuePaused(!queue.isPaused) } }
-                    } message: {
-                        Text(queue.isPaused ? "Waiting jobs can be processed again." : "Active jobs will finish. New jobs will wait until the queue is resumed.")
-                    }
+            HStack(spacing: 10) {
+                if model.isReadOnly { Label("Read-only", systemImage: "lock").font(.caption) }
+                Picker("Refresh", selection: Binding(get: { model.refreshInterval }, set: { model.setRefreshInterval($0) })) {
+                    Text("Manual").tag(0)
+                    Text("Every 5s").tag(5)
+                    Text("Every 15s").tag(15)
+                    Text("Every 30s").tag(30)
+                    Text("Every 60s").tag(60)
+                }.frame(width: 155)
+                Spacer(minLength: 0)
+                Button { Task { await model.refreshSelectedQueue() } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Refresh now").disabled(model.isLoading || !model.isConnected)
+                if let queue = model.selectedQueue {
+                    Button(queue.isPaused ? "Resume queue" : "Pause queue") { confirmPause = true }
+                        .disabled(!model.canWrite || model.isLoading)
+                        .alert(queue.isPaused ? "Resume this queue?" : "Pause this queue?", isPresented: $confirmPause) {
+                            Button("Cancel", role: .cancel) {}
+                            Button(queue.isPaused ? "Resume" : "Pause") { Task { await model.setSelectedQueuePaused(!queue.isPaused) } }
+                        } message: {
+                            Text(queue.isPaused ? "Waiting jobs can be processed again." : "Active jobs will finish. New jobs will wait until the queue is resumed.")
+                        }
+                }
             }
         }
         .controlSize(.small)
@@ -80,14 +82,12 @@ struct JobSearchControls: View {
                     Task { await model.applyJobSearch() }
                 }.disabled(model.isLoading)
             }
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
                 Toggle("Created between", isOn: $useDates).toggleStyle(.checkbox)
                 if useDates {
-                    DatePicker("From", selection: $from).labelsHidden()
-                    Text("and")
-                    DatePicker("Through", selection: $through).labelsHidden()
+                    DatePicker("From", selection: $from)
+                    DatePicker("Through", selection: $through)
                 }
-                Spacer()
             }
             if model.appliedJobFilter != nil {
                 HStack {

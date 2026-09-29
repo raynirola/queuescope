@@ -240,7 +240,7 @@ private struct RunsRow: View {
                     .foregroundStyle(rowSecondary)
                     .lineLimit(1)
             }
-            .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
 
             RunMetric(title: "Duration", value: duration, isSelected: isSelected)
             RunMetric(title: "Attempts", value: attempts, isSelected: isSelected)
@@ -317,7 +317,7 @@ private struct RunsHeader: View {
             Text("")
                 .frame(width: 30)
             Text("Job")
-                .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
             headerText("Duration")
             headerText("Attempts")
             headerText("Age")

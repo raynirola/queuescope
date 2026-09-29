@@ -179,18 +179,8 @@ private struct MetricsGrid: View {
     let selectState: (BullMQState) -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            metricRow(BullMQState.allCases)
-            VStack(spacing: 10) {
-                metricRow(Array(BullMQState.allCases.prefix(4)))
-                metricRow(Array(BullMQState.allCases.suffix(4)))
-            }
-        }
-    }
-
-    private func metricRow(_ states: [BullMQState]) -> some View {
-        HStack(spacing: 10) {
-            ForEach(states) { state in
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 174), spacing: 10)], spacing: 10) {
+            ForEach(BullMQState.allCases) { state in
                 CompactMetric(
                     title: state.displayName,
                     value: queue.counts.count(for: state),
@@ -223,7 +213,7 @@ private struct CompactMetric: View {
 
                 labelPill
             }
-            .frame(minWidth: 150, maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(cardBackground, in: RoundedRectangle(cornerRadius: 10))
@@ -494,13 +484,12 @@ private struct MetricsPanel: View {
 
                 MetricOverviewCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack {
+                        VStack(alignment: .leading, spacing: 10) {
                             Text("Throughput · jobs/min")
                                 .font(.caption.weight(.semibold))
                                 .textCase(.uppercase)
                                 .tracking(2.6)
                                 .foregroundStyle(.secondary)
-                            Spacer()
                             throughputTimeframePicker
                         }
 
