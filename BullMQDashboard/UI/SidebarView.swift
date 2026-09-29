@@ -26,14 +26,17 @@ struct SidebarView: View {
                     .disabled(!model.isConnected || model.isLoading)
                 if model.hasDiscoveredQueues && model.discoveryCursor == "0" { Image(systemName: "checkmark.circle").foregroundStyle(.secondary) }
                 Spacer()
-            }.padding(.horizontal, 18).padding(.vertical, 8)
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
             queueList
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var queueList: some View {
-        ZStack(alignment: .bottom) {
+        VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     queueSectionHeader
@@ -91,13 +94,14 @@ struct SidebarView: View {
                         }
                     }
                 }
-                .padding(.bottom, 74)
+                .padding(.bottom, 12)
             }
             .background(Color(nsColor: .windowBackgroundColor))
 
+            Divider()
             QueueSearchBar(text: $queueSearch)
                 .padding(.horizontal, 12)
-                .padding(.bottom, 12)
+                .padding(.vertical, 12)
         }
         .popover(item: $queueBeingGrouped, arrowEdge: .trailing) { queue in
             QueueGroupPopover(
@@ -185,6 +189,8 @@ struct SidebarView: View {
 
                 Text(connectionTitle)
                     .font(.headline)
+                    .lineLimit(1)
+                    .help(connectionTitle)
             }
 
             HStack(spacing: 6) {
@@ -366,11 +372,11 @@ private struct QueueSearchBar: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(Color.primary.opacity(0.10))
         }
-        .shadow(color: .black.opacity(0.10), radius: 14, x: 0, y: 8)
+
     }
 }
 
-private struct ManualQueuePopover: View {
+struct ManualQueuePopover: View {
     @Binding var queueName: String
     @Binding var displayName: String
     let prefix: String
@@ -417,7 +423,7 @@ private struct ManualQueuePopover: View {
                     .disabled(queueName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(width: 305)
         .onAppear {
             isFocused = true
@@ -456,9 +462,12 @@ struct ConnectionManagerView: View {
             Divider()
 
             HStack(alignment: .top, spacing: 0) {
-                connectionEditor
-                    .frame(width: 330)
-                    .padding(16)
+                ScrollView {
+                    connectionEditor
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                }
+                .frame(width: 362)
 
                 Divider()
 
@@ -505,6 +514,7 @@ struct ConnectionManagerView: View {
             .font(.system(size: 14, weight: .medium))
             .foregroundStyle(.secondary)
             .help("Close")
+            .accessibilityLabel("Close connection manager")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -640,12 +650,8 @@ struct ConnectionManagerView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.primary.opacity(0.06))
-                }
+                .padding(16)
+                .dashboardSurface()
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -741,11 +747,7 @@ private struct ProfileRow: View {
         }
         .disabled(model.activeJobAction != nil || model.activeLoadingPhases.contains(.connecting))
         .padding(10)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.78), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.06))
-        }
+        .dashboardSurface()
     }
 
     private func connect() {
@@ -893,19 +895,9 @@ private struct QueueSidebarRow: View {
                     .foregroundStyle(isSelected ? .white.opacity(0.72) : .secondary)
                     .lineLimit(1)
 
-                HStack(spacing: 6) {
-                    if queue.counts.active > 0 {
-                        QueueMiniCount(value: queue.counts.active, label: "active", color: .blue)
-                    }
-                    if queue.counts.waiting > 0 {
-                        QueueMiniCount(value: queue.counts.waiting, label: "waiting", color: .teal)
-                    }
-                    if queue.counts.failed > 0 {
-                        QueueMiniCount(value: queue.counts.failed, label: "failed", color: .red)
-                    }
-                    if queue.counts.active == 0, queue.counts.waiting == 0, queue.counts.failed == 0 {
-                        QueueMiniCount(value: 0, label: "idle", color: .secondary)
-                    }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { queueBadges }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), alignment: .leading)], alignment: .leading, spacing: 4) { queueBadges }
                 }
             }
 
@@ -944,7 +936,9 @@ private struct QueueSidebarRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .foregroundStyle(isSelected ? .white : .secondary)
             .help("Queue actions")
+            .accessibilityLabel("Queue actions")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
@@ -975,9 +969,26 @@ private struct QueueSidebarRow: View {
         case .unknown: "questionmark"
         }
     }
+
+    @ViewBuilder
+    private var queueBadges: some View {
+        if queue.counts.active > 0 {
+            QueueMiniCount(value: queue.counts.active, label: "active", color: isSelected ? .white : .blue)
+        }
+        if queue.counts.waiting > 0 {
+            QueueMiniCount(value: queue.counts.waiting, label: "waiting", color: isSelected ? .white : .teal)
+        }
+        if queue.counts.failed > 0 {
+            QueueMiniCount(value: queue.counts.failed, label: "failed", color: isSelected ? .white : .red)
+        }
+        if queue.counts.active == 0, queue.counts.waiting == 0, queue.counts.failed == 0 {
+            QueueMiniCount(value: 0, label: "idle", color: isSelected ? .white : .secondary)
+        }
+    }
+
 }
 
-private struct QueueGroupPopover: View {
+struct QueueGroupPopover: View {
     let queue: QueueSummary
     @Binding var groupName: String
     let existingGroups: [String]
@@ -1034,7 +1045,7 @@ private struct QueueGroupPopover: View {
                     .buttonStyle(.borderedProminent)
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(width: 305)
         .onAppear {
             isFocused = true
@@ -1046,7 +1057,7 @@ private struct QueueGroupPopover: View {
     }
 }
 
-private struct QueueGroupManagementPopover: View {
+struct QueueGroupManagementPopover: View {
     let queues: [QueueSummary]
     let existingGroups: [String]
     let createGroup: ([String], String) -> Void
@@ -1056,99 +1067,102 @@ private struct QueueGroupManagementPopover: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Groups")
-                    .font(.headline)
-                Text("Create groups from existing queues or clear a group.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("New group")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                TextField("Production", text: $groupName)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($isFocused)
-                    .onSubmit(createIfValid)
-            }
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Queues")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { queue in
-                            Toggle(isOn: binding(for: queue.name)) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(queue.resolvedDisplayName)
-                                        .font(.caption.weight(.medium))
-                                        .lineLimit(1)
-                                    Text(queue.resolvedGroupName)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .toggleStyle(.checkbox)
-                        }
-                    }
-                    .padding(.vertical, 2)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Groups")
+                        .font(.headline)
+                    Text("Create groups from existing queues or clear a group.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxHeight: 150)
-            }
 
-            if !existingGroups.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("New group")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    TextField("Production", text: $groupName)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isFocused)
+                        .onSubmit(createIfValid)
+                }
+
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("Existing groups")
+                    Text("Queues")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(existingGroups, id: \.self) { group in
-                            HStack(spacing: 8) {
-                                Button(group) {
-                                    groupName = group
-                                    selectedQueueNames = Set(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { queue in
+                                Toggle(isOn: binding(for: queue.name)) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(queue.resolvedDisplayName)
+                                            .font(.caption.weight(.medium))
+                                            .lineLimit(1)
+                                        Text(queue.resolvedGroupName)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
                                 }
-                                .buttonStyle(.borderless)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
+                                .toggleStyle(.checkbox)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .frame(maxHeight: 150)
+                }
 
-                                Spacer()
+                if !existingGroups.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Existing groups")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
 
-                                Button("Clear") {
-                                    ungroupQueues(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(existingGroups, id: \.self) { group in
+                                HStack(spacing: 8) {
+                                    Button(group) {
+                                        groupName = group
+                                        selectedQueueNames = Set(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption.weight(.medium))
+                                    .lineLimit(1)
+
+                                    Spacer()
+
+                                    Button("Clear") {
+                                        ungroupQueues(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption)
                                 }
-                                .buttonStyle(.borderless)
-                                .font(.caption)
                             }
                         }
                     }
                 }
-            }
 
-            HStack {
-                Button("Reset") {
-                    groupName = ""
-                    selectedQueueNames = []
+                HStack {
+                    Button("Reset") {
+                        groupName = ""
+                        selectedQueueNames = []
+                    }
+                    .buttonStyle(.borderless)
+
+                    Spacer()
+
+                    Button("Create", action: createIfValid)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedQueueNames.isEmpty)
                 }
-                .buttonStyle(.borderless)
-
-                Spacer()
-
-                Button("Create", action: createIfValid)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedQueueNames.isEmpty)
             }
+            .padding(16)
+            .frame(width: 330)
         }
-        .padding(14)
-        .frame(width: 330)
+        .frame(maxHeight: 540)
         .onAppear {
             isFocused = true
             if selectedQueueNames.isEmpty, let firstUngrouped = queues.first(where: { $0.groupName == nil }) {
@@ -1201,11 +1215,11 @@ private struct QueueMiniCount: View {
     var body: some View {
         Text(value > 0 ? "\(value.compactCountDisplay) \(label)" : label)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(value > 0 ? color : .secondary)
+            .foregroundStyle(color)
             .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background((value > 0 ? color : Color.secondary).opacity(0.10), in: Capsule())
+            .background(color.opacity(0.12), in: Capsule())
     }
 }
 

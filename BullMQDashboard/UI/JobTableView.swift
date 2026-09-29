@@ -9,78 +9,87 @@ struct JobTableView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             JobSearchControls()
-            HStack {
-                Label("Runs", systemImage: "list.bullet.rectangle")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                LoadingSpinnerSlot(isVisible: model.activeLoadingPhases.contains(.runs))
-                if model.selectedVisibleJobCount > 0 {
-                    Text("\(model.selectedVisibleJobCount) selected")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-                Button {
-                    addJobDraft = JobDuplicateDraft(name: "", dataJSON: "{}", optionsJSON: "{}")
-                    isAddJobSheetPresented = true
-                } label: {
-                    Label("Add job", systemImage: "plus")
-                }
-                .controlSize(.small)
-                .disabled(model.selectedQueue == nil || model.activeJobAction != nil || !model.canWrite)
-
-                Menu {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Runs", systemImage: "list.bullet.rectangle")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    LoadingSpinnerSlot(isVisible: model.activeLoadingPhases.contains(.runs))
+                    if model.selectedVisibleJobCount > 0 {
+                        Text("\(model.selectedVisibleJobCount) selected")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                     Button {
-                        model.retrySelectedJobs()
+                        addJobDraft = JobDuplicateDraft(name: "", dataJSON: "{}", optionsJSON: "{}")
+                        isAddJobSheetPresented = true
                     } label: {
-                        Label("Retry eligible", systemImage: "arrow.counterclockwise")
+                        Label("Add job", systemImage: "plus")
                     }
-                    .disabled(model.selectedBulkRetryCount == 0)
+                    .controlSize(.small)
+                    .disabled(model.selectedQueue == nil || model.activeJobAction != nil || !model.canWrite)
 
-                    Button {
-                        model.promoteSelectedJobs()
+                    Menu {
+                        Button {
+                            model.retrySelectedJobs()
+                        } label: {
+                            Label("Retry eligible", systemImage: "arrow.counterclockwise")
+                        }
+                        .disabled(model.selectedBulkRetryCount == 0)
+
+                        Button {
+                            model.promoteSelectedJobs()
+                        } label: {
+                            Label("Promote delayed", systemImage: "arrow.up")
+                        }
+                        .disabled(model.selectedBulkPromoteCount == 0)
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            isBulkRemoveConfirmationPresented = true
+                        } label: {
+                            Label("Remove eligible", systemImage: "trash")
+                        }
+                        .disabled(model.selectedBulkRemoveCount == 0)
                     } label: {
-                        Label("Promote delayed", systemImage: "arrow.up")
+                        Label("Bulk actions", systemImage: "checklist")
                     }
-                    .disabled(model.selectedBulkPromoteCount == 0)
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        isBulkRemoveConfirmationPresented = true
-                    } label: {
-                        Label("Remove eligible", systemImage: "trash")
-                    }
-                    .disabled(model.selectedBulkRemoveCount == 0)
-                } label: {
-                    Label("Bulk actions", systemImage: "checklist")
+                    .menuStyle(.button)
+                    .controlSize(.small)
+                    .disabled(model.selectedVisibleJobCount == 0 || model.activeJobAction != nil || model.isReadOnly)
                 }
-                .menuStyle(.button)
-                .controlSize(.small)
-                .disabled(model.selectedVisibleJobCount == 0 || model.activeJobAction != nil || model.isReadOnly)
                 if model.appliedJobFilter == nil {
-                Text(model.runPageRangeText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    Button {
-                        model.goToPreviousRunPage()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                    }
-                    .disabled(!model.canGoToPreviousRunPage)
+                    HStack {
+                        Text(model.runPageRangeText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Button {
+                                model.goToPreviousRunPage()
+                            } label: {
+                                Image(systemName: "chevron.left")
+                            }
+                            .disabled(!model.canGoToPreviousRunPage)
+                            .help("Previous page")
+                            .accessibilityLabel("Previous page")
 
-                    Button {
-                        model.goToNextRunPage()
-                    } label: {
-                        Image(systemName: "chevron.right")
+                            Button {
+                                model.goToNextRunPage()
+                            } label: {
+                                Image(systemName: "chevron.right")
+                            }
+                            .disabled(!model.canGoToNextRunPage)
+                            .help("Next page")
+                            .accessibilityLabel("Next page")
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                     }
-                    .disabled(!model.canGoToNextRunPage)
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
                 }
             }
-            .frame(height: 28)
+            .controlSize(.small)
             .alert("Remove selected jobs?", isPresented: $isBulkRemoveConfirmationPresented) {
                 Button("Cancel", role: .cancel) {}
                 Button("Remove", role: .destructive) {

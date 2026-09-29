@@ -9,7 +9,7 @@ struct DashboardRootView: View {
 
     var body: some View {
         rootSplit
-        .frame(minWidth: 1120, minHeight: 640)
+        .frame(minWidth: 1120, minHeight: 720)
         .animation(.snappy(duration: 0.18), value: isInspectorVisible)
         .animation(.snappy(duration: 0.18), value: model.inspectorRevision)
         .toolbar {
@@ -102,9 +102,9 @@ struct DashboardRootView: View {
     private var inspectorDrawer: some View {
         if isInspectorVisible, model.selectedJobDetail != nil {
             JobInspectorView()
-                .frame(width: 520)
+                .frame(width: 500)
                 .frame(maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .shadow(color: .black.opacity(0.18), radius: 22, x: -8, y: 0)
                 .padding(.vertical, 10)
                 .padding(.trailing, 10)
@@ -230,5 +230,17 @@ private struct WorkspaceViewRow: View {
         case .workers: .indigo
         case .metrics: .green
         }
+    }
+}
+
+// Shared surface treatment for cards and grouped details throughout the app.
+// Padding belongs to each layout, so tables and forms can keep their own density.
+extension View {
+    func dashboardSurface() -> some View {
+        background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.primary.opacity(0.08))
+            }
     }
 }

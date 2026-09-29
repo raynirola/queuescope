@@ -30,7 +30,7 @@ struct JobInspectorView: View {
                         LogsPanel()
                             .id(model.inspectedJobKey)
                     }
-                    .padding(18)
+                    .padding(16)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
                 .onChange(of: model.inspectedJobKey) { _, _ in
@@ -122,13 +122,16 @@ struct JobInspectorView: View {
             .controlSize(.small)
             .disabled(model.activeJobAction != nil || !model.canWrite)
             .help("Job actions")
+
+            Button { model.clearSelectedJob() } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Close inspector")
+            .accessibilityLabel("Close inspector")
         }
         .padding(12)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.92), in: RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.primary.opacity(0.06))
-        }
+        .dashboardSurface()
     }
 
     private func detailRows(_ detail: JobDetail) -> some View {
@@ -170,11 +173,7 @@ struct JobInspectorView: View {
             )
         }
         .padding(.vertical, 6)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.92), in: RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.primary.opacity(0.06))
-        }
+        .dashboardSurface()
     }
 
     private func format(_ date: Date?) -> String {
@@ -272,11 +271,7 @@ private struct LogsPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.primary.opacity(0.06))
-                    }
+                    .dashboardSurface()
             } else {
                 InspectorLogsBlock(entries: model.selectedJobLogs.entries, copyText: logCopyText)
             }
@@ -348,11 +343,7 @@ private struct InspectorLogsBlock: View {
             .padding(6)
         }
         .padding(10)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.07))
-        }
+        .dashboardSurface()
         .sheet(isPresented: $isFullViewPresented) {
             InspectorLogsFullView(entries: entries)
                 .frame(width: fullViewSize.width, height: fullViewSize.height)
@@ -409,7 +400,7 @@ private struct InspectorLogsFullView: View {
                 .padding(.vertical, 4)
             }
         }
-        .padding(18)
+        .padding(16)
     }
 
     private func toggleEntry(_ id: Int) {
@@ -679,11 +670,7 @@ private struct InspectorJSONBlock: View {
             .padding(6)
         }
         .padding(10)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.07))
-        }
+        .dashboardSurface()
         .sheet(isPresented: $isFullViewPresented) {
             InspectorJSONFullView(title: title, value: value)
                 .frame(width: fullViewSize.width, height: fullViewSize.height)
@@ -759,7 +746,7 @@ private struct InspectorJSONFullView: View {
                     .strokeBorder(Color.primary.opacity(0.08))
             }
         }
-        .padding(18)
+        .padding(16)
     }
 
     @ViewBuilder
@@ -839,11 +826,7 @@ private struct InspectorCodeBlock<Content: View>: View {
             .padding(6)
         }
         .padding(10)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.07))
-        }
+        .dashboardSurface()
         .sheet(isPresented: $isFullViewPresented) {
             InspectorFullCodeView(title: title, text: copyText)
                 .frame(width: fullViewSize.width, height: fullViewSize.height)
@@ -957,7 +940,7 @@ private struct InspectorFullCodeView: View {
                     .strokeBorder(Color.primary.opacity(0.08))
             }
         }
-        .padding(18)
+        .padding(16)
     }
 }
 
@@ -1004,11 +987,7 @@ private struct InspectorSingleLineBlock<Content: View>: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.07))
-        }
+        .dashboardSurface()
     }
 
     private func copyToClipboard() {

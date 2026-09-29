@@ -12,7 +12,7 @@ struct BullMQDashboardApp: App {
                NSClassFromString("XCTestCase") == nil {
                 DashboardRootView()
                     .environmentObject(appModel)
-                    .frame(minWidth: 1280, minHeight: 780)
+                    .frame(minWidth: 1120, minHeight: 720)
             }
         }
         .commands {
