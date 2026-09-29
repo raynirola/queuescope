@@ -334,6 +334,97 @@ final class AppModelRefreshTests: XCTestCase {
         }
     }
 
+    func testFailureInboxGroupsAcrossQueuesAndTracksNewJobs() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.queues = ["email", "reports"].map { QueueSummary(name: $0, prefix: "bull", counts: .empty, health: .failing) }
+        var first = makeJob(id: "1", queueName: "email", state: .failed)
+        first.failedReason = "HTTP 429: rate limited"
+        var second = first
+        second.queueName = "reports"
+        engine.failedJobsByQueue = ["email": [first], "reports": [second]]
+        await model.scanFailures()
+        XCTAssertEqual(model.failureJobs.count, 2)
+        XCTAssertEqual(model.failureGroups.count, 1)
+        XCTAssertEqual(model.failureGroups.first?.queues, ["email", "reports"])
+        XCTAssertFalse(model.failureScanHasMore)
+        XCTAssertTrue(model.newlyObservedFailures.isEmpty)
+        var new = first; new.id = "2"
+        engine.failedJobsByQueue["email"]?.append(new)
+        await model.scanFailures()
+        XCTAssertEqual(model.newlyObservedFailures, ["email:2"])
+        await model.disconnect()
+        XCTAssertTrue(model.failureJobs.isEmpty)
+        XCTAssertNil(model.failureScanDate)
+    }
+
+    func testFailureInboxPaginatesAndRejectsDisconnectedResults() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.queues = [QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .failing)]
+        engine.failedJobsByQueue = ["email": (0..<620).map { makeJob(id: String($0), queueName: "email", state: .failed) }]
+        await model.scanFailures()
+        XCTAssertEqual(model.failureJobs.count, 500)
+        XCTAssertTrue(model.failureScanHasMore)
+        model.selectWorkspaceView(.failures)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(model.failureJobs.count, 500)
+        await model.scanFailures(restart: false)
+        XCTAssertEqual(model.failureJobs.count, 620)
+        XCTAssertFalse(model.failureScanHasMore)
+        engine.failedPageDelay = 100_000_000
+        let scan = Task { await model.scanFailures() }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        await model.disconnect()
+        await scan.value
+        XCTAssertTrue(model.failureJobs.isEmpty)
+        XCTAssertFalse(model.isScanningFailures)
+    }
+
+    func testOfflineDemoDoesNotConnectLiveEngineAndCanExit() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.startDemo()
+        XCTAssertTrue(model.isDemo)
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertNil(engine.connectedConfig)
+        XCTAssertEqual(model.failureGroups.count, 3)
+        XCTAssertEqual(model.failureJobs.count, 54)
+        await model.inspectJob(JobReference(prefix: "bull", queue: "email-delivery", jobID: "demo-1"))
+        XCTAssertNotNil(model.selectedJobDetail)
+        await model.connect()
+        XCTAssertFalse(model.isDemo)
+        XCTAssertNotNil(engine.connectedConfig)
+        XCTAssertTrue(model.failureJobs.isEmpty)
+    }
+
+    func testSSHDestinationsDoNotShareSavedQueues() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        model.useSSH = true
+        model.sshSettings.host = "first-bastion"
+        await model.connect()
+        await model.addManualQueue(named: "private-queue")
+        model.sshSettings.host = "second-bastion"
+        await model.connect()
+        XCTAssertTrue(model.queues.isEmpty)
+        model.sshSettings.host = "first-bastion"
+        await model.connect()
+        XCTAssertEqual(model.queues.map(\.name), ["private-queue"])
+    }
+
+    func testSSHSettingsAreAppliedToConnection() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        model.useSSH = true
+        model.sshSettings = SSHConnectionSettings(host: "bastion", user: "developer", port: 2222, identityFile: "~/.ssh/id_ed25519")
+        await model.connect()
+        XCTAssertEqual(engine.connectedConfig?.ssh, model.sshSettings)
+        XCTAssertEqual(model.activeConnection?.host, "127.0.0.1")
+    }
+
     func testCompleteWindowLayoutsRender() async throws {
         let engine = FakeBullMQEngine()
         let model = makeModel(engine: engine)
@@ -360,6 +451,8 @@ final class AppModelRefreshTests: XCTestCase {
                 completed: BullMQMetricSeries(count: 4_700_000, previousTimestamp: .now, previousCount: 0, data: Array(repeating: 27, count: 1440)),
                 failed: BullMQMetricSeries(count: 328_000, previousTimestamp: .now, previousCount: 0, data: Array(repeating: 7, count: 1440))))]
         model.profiles = [RedisConnectionProfile(name: "Local Redis", redisURL: "redis://127.0.0.1:6379", prefix: "bull")]
+        engine.failedJobsByQueue[queue.name] = model.jobs
+        await model.scanFailures()
         model.lastRefreshedAt = .now
         for dark in [false, true] {
             let theme = dark ? "dark" : "light"
@@ -384,6 +477,22 @@ final class AppModelRefreshTests: XCTestCase {
             model.selectedJobDetail = detail
             try await renderLayout(AnyView(JobInspectorView().environmentObject(model)), width: 500, height: 850, name: "\(theme)-inspector", dark: dark)
             model.selectedJobDetail = nil
+        }
+    }
+
+    func testOnboardingAndDemoLayoutsRender() async throws {
+        let model = makeModel(engine: FakeBullMQEngine())
+        model.useSSH = true
+        model.sshSettings.host = "bastion.example.com"
+        model.sshSettings.user = "developer"
+        for dark in [false, true] {
+            let theme = dark ? "dark" : "light"
+            try await renderLayout(AnyView(ConnectionManagerView().environmentObject(model)), width: 695, height: 520, name: "\(theme)-ssh-onboarding", dark: dark)
+        }
+        await model.startDemo()
+        for dark in [false, true] {
+            let theme = dark ? "dark" : "light"
+            try await renderLayout(AnyView(DashboardRootView().environmentObject(model)), width: 1120, height: 720, name: "\(theme)-demo-inbox", dark: dark)
         }
     }
 
@@ -447,7 +556,7 @@ final class AppModelRefreshTests: XCTestCase {
         await model.connect(profile: profile)
         XCTAssertFalse(model.isConnected)
         XCTAssertNil(engine.connectedConfig)
-        XCTAssertTrue(model.lastError?.contains("missing from Keychain") == true)
+        XCTAssertTrue(model.lastError?.contains("are missing") == true)
     }
 
     func testEditingPrefixDoesNotChangeActiveSession() async {
@@ -952,6 +1061,8 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     func searchJobs(queueName: String, prefix: String, state: BullMQState?, filter: JobFilter, cursor: JobSearchCursor) async throws -> JobSearchResult { searchResult }
     func getJobFlow(_ reference: JobReference) async throws -> JobFlow { flowCalls.append(reference); return flowResult }
     func setQueuePaused(queueName: String, prefix: String, paused: Bool) async throws { pauseCalls.append(paused) }
+    var failedJobsByQueue: [String: [JobSummary]] = [:]
+    var failedPageDelay: UInt64 = 0
     var connectShouldFail = false
     var connectedConfig: RedisConnectionConfig?
     var overviewPrefixes: [String] = []
@@ -974,7 +1085,9 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     }
 
     func getJobs(queueName: String, prefix: String, state: BullMQState, page: Int, pageSize: Int) async throws -> JobPage {
-        JobPage(jobs: recentJobs, total: recentJobs.count, page: page, pageSize: pageSize)
+        if failedPageDelay > 0 { try? await Task.sleep(nanoseconds: failedPageDelay) }
+        let values = state == .failed ? (failedJobsByQueue[queueName] ?? recentJobs) : recentJobs
+        return JobPage(jobs: Array(values.dropFirst(page * pageSize).prefix(pageSize)), total: values.count, page: page, pageSize: pageSize)
     }
 
     func getRecentJobs(queueName: String, prefix: String, states: [BullMQState], perStateLimit: Int, totalLimit: Int) async throws -> [JobSummary] {

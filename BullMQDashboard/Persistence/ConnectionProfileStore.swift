@@ -59,15 +59,37 @@ struct KeychainConnectionCredentials: ConnectionCredentialStore {
     }
 }
 
+#if DEBUG
+// Development binaries are rebuilt frequently and cannot rely on stable Keychain trust.
+// Keep this store and its profile metadata separate from release credentials.
+struct DevelopmentConnectionCredentials: ConnectionCredentialStore {
+    let defaults: UserDefaults
+    private func key(_ id: UUID) -> String { "redis.development.credentials.\(id.uuidString)" }
+    func read(id: UUID) throws -> String? { defaults.string(forKey: key(id)) }
+    func write(_ url: String, id: UUID) throws { defaults.set(url, forKey: key(id)) }
+    func delete(id: UUID) throws { defaults.removeObject(forKey: key(id)) }
+}
+#endif
+
 final class ConnectionProfileStore {
-    private let key = "redis.connection.profiles"
-    private let lastActiveProfileIDKey = "redis.connection.lastActiveProfileID"
+    private let key: String
+    private let lastActiveProfileIDKey: String
     private let defaults: UserDefaults
     private let credentials: any ConnectionCredentialStore
 
-    init(defaults: UserDefaults = .standard, credentials: any ConnectionCredentialStore = KeychainConnectionCredentials()) {
+    init(defaults: UserDefaults = .standard, credentials: (any ConnectionCredentialStore)? = nil) {
         self.defaults = defaults
-        self.credentials = credentials
+        #if DEBUG
+        if credentials == nil {
+            self.credentials = DevelopmentConnectionCredentials(defaults: defaults)
+            key = "redis.development.profiles"
+            lastActiveProfileIDKey = "redis.development.lastActiveProfileID"
+            return
+        }
+        #endif
+        self.credentials = credentials ?? KeychainConnectionCredentials()
+        key = "redis.connection.profiles"
+        lastActiveProfileIDKey = "redis.connection.lastActiveProfileID"
     }
 
     func load() throws -> [RedisConnectionProfile] {

@@ -46,7 +46,7 @@ function redisConnection(redis) {
     connection.password = redis.password;
   }
   if (redis.useTLS === true) {
-    connection.tls = {};
+    connection.tls = redis.tlsServerName ? { servername: redis.tlsServerName } : {};
   }
 
   return connection;

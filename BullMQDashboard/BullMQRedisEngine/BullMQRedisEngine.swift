@@ -1,6 +1,7 @@
 import Foundation
 
 actor BullMQRedisEngine: BullMQEngine {
+    private var sshTunnel: SSHTunnel?
     private var redis: RedisRESPClient?
     private var config: RedisConnectionConfig?
     private var connectionGeneration = UUID()
@@ -21,18 +22,36 @@ actor BullMQRedisEngine: BullMQEngine {
         await disconnect()
         let generation = connectionGeneration
         let client = RedisRESPClient()
-        try await client.connect(config)
-        guard generation == connectionGeneration else { await client.disconnect(); throw CancellationError() }
-        self.redis = client
-        self.config = config
+        var transport = config
+        let tunnel = config.ssh == nil ? nil : SSHTunnel()
+        do {
+            if let settings = config.ssh, let tunnel {
+                transport.transportPort = try await tunnel.start(settings, redisHost: config.host, redisPort: config.port)
+                transport.transportHost = "127.0.0.1"
+            }
+            guard generation == connectionGeneration else { throw CancellationError() }
+            try await client.connect(transport)
+            _ = try await client.command(["PING"])
+            guard generation == connectionGeneration else { throw CancellationError() }
+            self.redis = client
+            self.config = transport
+            self.sshTunnel = tunnel
+        } catch {
+            await client.disconnect()
+            await tunnel?.stop()
+            throw error
+        }
     }
 
     func disconnect() async {
         connectionGeneration = UUID()
+        let previousTunnel = sshTunnel
+        sshTunnel = nil
         let previous = redis
         redis = nil
         config = nil
         await previous?.disconnect()
+        await previousTunnel?.stop()
     }
 
     func discoverQueues(prefix: String, cursor: String = "0") async throws -> QueueDiscovery {

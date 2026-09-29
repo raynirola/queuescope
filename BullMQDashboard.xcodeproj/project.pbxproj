@@ -35,6 +35,8 @@
 		100000000000000000000115 /* JSONSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000216 /* JSONSyntaxHighlighter.swift */; };
 		100000000000000000000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000218 /* Assets.xcassets */; };
 		110000000000000000000001 /* QueueFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000002; };
+		120000000000000000000001 /* SSHTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000000000000000000002; };
+		120000000000000000000003 /* DemoBullMQEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000000000000000000004; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,6 +79,8 @@
 		100000000000000000000216 /* JSONSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		100000000000000000000218 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		110000000000000000000002 /* QueueFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueFeatureViews.swift; sourceTree = "<group>"; };
+		120000000000000000000002 /* SSHTunnel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTunnel.swift; sourceTree = "<group>"; };
+		120000000000000000000004 /* DemoBullMQEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBullMQEngine.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -145,6 +149,8 @@
 			isa = PBXGroup;
 			children = (
 				100000000000000000000203 /* BullMQRedisEngine.swift */,
+				120000000000000000000002 /* SSHTunnel.swift */,
+				120000000000000000000004 /* DemoBullMQEngine.swift */,
 				100000000000000000000219 /* BullMQMutationClient.swift */,
 				100000000000000000000204 /* RESPValue.swift */,
 				100000000000000000000205 /* RedisRESPClient.swift */,
@@ -319,7 +325,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nif ! command -v npm >/dev/null 2>&1; then\n  for npm_candidate in \"$HOME\"/.nvm/versions/node/*/bin/npm; do\n    if [ -x \"$npm_candidate\" ]; then\n      export PATH=\"$(dirname \"$npm_candidate\"):$PATH\"\n      break\n    fi\n  done\nfi\nif ! command -v npm >/dev/null 2>&1; then\n  echo \"error: npm is required to package the BullMQ action bridge. Install Node.js/npm or make npm available via Homebrew, /usr/local/bin, or nvm.\" >&2\n  exit 1\nfi\n\nSOURCE_BRIDGE_DIR=\"$SRCROOT/BullMQActionBridge\"\nBUILD_BRIDGE_DIR=\"$DERIVED_FILE_DIR/BullMQActionBridge\"\nBUNDLE_BRIDGE_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BullMQActionBridge\"\n\nrm -rf \"$BUILD_BRIDGE_DIR\" \"$BUNDLE_BRIDGE_DIR\"\nmkdir -p \"$BUILD_BRIDGE_DIR\" \"$BUNDLE_BRIDGE_DIR\"\n\ncp \"$SOURCE_BRIDGE_DIR/bridge.mjs\" \"$BUILD_BRIDGE_DIR/bridge.mjs\"\ncp \"$SOURCE_BRIDGE_DIR/package.json\" \"$BUILD_BRIDGE_DIR/package.json\"\ncp \"$SOURCE_BRIDGE_DIR/package-lock.json\" \"$BUILD_BRIDGE_DIR/package-lock.json\"\n\nnpm ci --omit=dev --prefix \"$BUILD_BRIDGE_DIR\"\n\ncp -R \"$BUILD_BRIDGE_DIR/.\" \"$BUNDLE_BRIDGE_DIR/\"\n";
+			shellScript = "/bin/bash \"$SRCROOT/scripts/package-bridge.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -332,6 +338,8 @@
 				100000000000000000000102 /* BullMQDashboardApp.swift in Sources */,
 				10000000000000000000011A /* AppUpdater.swift in Sources */,
 				100000000000000000000103 /* BullMQRedisEngine.swift in Sources */,
+				120000000000000000000001 /* SSHTunnel.swift in Sources */,
+				120000000000000000000003 /* DemoBullMQEngine.swift in Sources */,
 				100000000000000000000118 /* BullMQMutationClient.swift in Sources */,
 				100000000000000000000104 /* RESPValue.swift in Sources */,
 				100000000000000000000105 /* RedisRESPClient.swift in Sources */,
@@ -497,7 +505,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = TH48DG8RVN;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -508,7 +516,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.1;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboard;
 				PRODUCT_MODULE_NAME = BullMQDashboard;
 				PRODUCT_NAME = QueueScope;
@@ -523,7 +531,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = TH48DG8RVN;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -534,7 +542,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.1;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboard;
 				PRODUCT_MODULE_NAME = BullMQDashboard;
 				PRODUCT_NAME = QueueScope;
@@ -549,10 +557,10 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = TH48DG8RVN;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.1;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboardTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -566,10 +574,10 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = TH48DG8RVN;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.1;
+				MARKETING_VERSION = 0.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.ray.BullMQDashboardTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;

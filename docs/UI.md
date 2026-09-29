@@ -12,6 +12,6 @@ Use native SwiftUI controls and semantic macOS colors so light/dark appearances 
 
 ## Visual verification
 
-`AppModelRefreshTests.testCompleteWindowLayoutsRender` renders all six workspace views at 1120 and 1400 points in light and dark mode, using isolated fake data. It also renders connection management, job editing, the inspector, and queue/group forms. PNGs are written to `/tmp/queuescope-layout-*.png` and retained as XCTest attachments.
+`AppModelRefreshTests.testCompleteWindowLayoutsRender` renders all seven workspace views at 1120 and 1400 points in light and dark mode, using isolated fake data. It also renders connection management, job editing, the inspector, and queue/group forms. PNGs are written to `/tmp/queuescope-layout-*.png` and retained as XCTest attachments.
 
 Inspect the rendered images after layout changes. Successful rendering alone does not prove that content fits or has adequate contrast. Test data must include populated and long-content cases; never use saved production connections for UI fixtures.

@@ -206,6 +206,104 @@ final class RedisTransportTests: XCTestCase {
         }
     }
 
+    func testConnectionDiagnosticsLeaveTheCurrentSessionUntouched() async throws {
+        try await withRedis { client, config in
+            _ = try await client.command(["HSET", "bull:diagnostic:meta", "version", "test"])
+            let suite = "ConnectionDiagnostics.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let model = AppModel(profileStore: ConnectionProfileStore(defaults: defaults, credentials: MemoryConnectionCredentials()))
+            model.redisURL = "redis://\(config.host):\(config.port)"
+            await model.testConnection()
+            XCTAssertTrue(model.connectionTestResult?.contains("succeeded") == true)
+            XCTAssertFalse(model.isConnected)
+            XCTAssertNil(model.activeConnection)
+            XCTAssertFalse(model.isTestingConnection)
+            let keyCount = try await client.command(["DBSIZE"])
+            XCTAssertEqual(keyCount.int, 1)
+            model.redisURL = "not-a-redis-url"
+            await model.testConnection()
+            XCTAssertFalse(model.connectionTestResult?.contains("succeeded") == true)
+            XCTAssertFalse(model.isTestingConnection)
+        }
+    }
+
+    func testBundledRuntimePerformsMutationWithoutExternalNode() async throws {
+        try await withRedis { client, config in
+            let runtime = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/node").path
+            XCTAssertTrue(FileManager.default.isExecutableFile(atPath: runtime))
+            let mutation = BullMQMutationClient(nodePath: runtime)
+            let id = try await mutation.addJob(config: config, queueName: "bundled-runtime", prefix: "bull", name: "Bundled", data: AnySendableJSON([:]), options: AnySendableJSON([:]))
+            let name = try await client.command(["HGET", "bull:bundled-runtime:\(id)", "name"])
+            XCTAssertEqual(name.string, "Bundled")
+        }
+    }
+
+    func testSSHTunnelForwardsReadsAndMutationsAndClosesPort() async throws {
+        try await withRedis(commandTimeout: 2) { _, redisConfig in
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("qs-sshd-\(UUID().uuidString.prefix(8))")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            for name in ["host", "client"] {
+                let generator = Process()
+                generator.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+                generator.arguments = ["-q", "-t", "ed25519", "-N", "", "-f", directory.appendingPathComponent(name).path]
+                try generator.run(); generator.waitUntilExit()
+                XCTAssertEqual(generator.terminationStatus, 0)
+            }
+            let port = Int.random(in: 20000...60000)
+            let configuration = directory.appendingPathComponent("sshd_config")
+            try """
+            Port \(port)
+            ListenAddress 127.0.0.1
+            HostKey \(directory.path)/host
+            PidFile \(directory.path)/pid
+            AuthorizedKeysFile \(directory.path)/client.pub
+            StrictModes no
+            PasswordAuthentication no
+            KbdInteractiveAuthentication no
+            UsePAM no
+            AllowTcpForwarding yes
+            """.write(to: configuration, atomically: true, encoding: .utf8)
+            let hostKey = try String(contentsOf: directory.appendingPathComponent("host.pub"), encoding: .utf8)
+            try "[127.0.0.1]:\(port) \(hostKey)".write(to: directory.appendingPathComponent("known_hosts"), atomically: true, encoding: .utf8)
+            let clientConfiguration = directory.appendingPathComponent("client_config")
+            try "Host *\n UserKnownHostsFile \(directory.path)/known_hosts\n IdentitiesOnly yes\n".write(to: clientConfiguration, atomically: true, encoding: .utf8)
+            let server = Process()
+            server.executableURL = URL(fileURLWithPath: "/usr/sbin/sshd")
+            server.arguments = ["-D", "-e", "-f", configuration.path]
+            server.standardOutput = FileHandle.nullDevice
+            server.standardError = FileHandle.nullDevice
+            try server.run()
+            defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertTrue(server.isRunning)
+            let settings = SSHConnectionSettings(host: "127.0.0.1", user: NSUserName(), port: port, identityFile: directory.appendingPathComponent("client").path)
+            let tunnel = SSHTunnel(configurationFile: clientConfiguration.path)
+            let localPort = try await tunnel.start(settings, redisHost: redisConfig.host, redisPort: redisConfig.port)
+            var forwarded = redisConfig
+            forwarded.transportHost = "127.0.0.1"
+            forwarded.transportPort = localPort
+            let engine = BullMQRedisEngine()
+            do {
+                try await engine.connect(forwarded)
+                let id = try await engine.addJob(queueName: "ssh-fixture", prefix: "bull", name: "Test", data: AnySendableJSON(["via": "ssh"]), options: AnySendableJSON([:]))
+                let found = try await engine.findJob(queueName: "ssh-fixture", prefix: "bull", jobID: id)
+                XCTAssertEqual(found?.name, "Test")
+                await engine.disconnect()
+            } catch {
+                await engine.disconnect(); await tunnel.stop(); throw error
+            }
+            await tunnel.stop()
+            let client = RedisRESPClient(commandTimeout: 0.2)
+            do {
+                try await client.connect(forwarded)
+                XCTFail("Tunnel port should be closed")
+            } catch { /* Expected: the listener belongs to the terminated SSH process. */ }
+            await client.disconnect()
+        }
+    }
+
     private func withRedis(commandTimeout: TimeInterval = 0.2, _ operation: (RedisRESPClient, RedisConnectionConfig) async throws -> Void) async throws {
         let candidates = [ProcessInfo.processInfo.environment["REDIS_SERVER_PATH"], "/opt/homebrew/bin/redis-server", "/usr/local/bin/redis-server"].compactMap { $0 }
         guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {

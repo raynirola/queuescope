@@ -186,3 +186,97 @@ struct JobFlowPanel: View {
         }
     }
 }
+
+struct FailureInboxView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var search = ""
+    @State private var selectedGroup: String?
+    private var groups: [FailureGroup] {
+        model.failureGroups.filter { search.isEmpty || $0.id.localizedCaseInsensitiveContains(search) || $0.queues.contains { $0.localizedCaseInsensitiveContains(search) } }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Failure inbox").font(.system(size: 28, weight: .semibold))
+                Text("Related failures across all discovered and saved queues in this connection.")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Scan failures") { Task { await model.scanFailures() } }
+                        .disabled(!model.isConnected || model.isScanningFailures)
+                    if model.failureScanHasMore {
+                        Button("Scan more") { Task { await model.scanFailures(restart: false) } }
+                            .disabled(model.isScanningFailures)
+                    }
+                    if model.isScanningFailures { ProgressView().controlSize(.small) }
+                    Spacer()
+                    Text("\(model.failureJobs.count) failures · \(model.failureGroups.count) groups")
+                        .font(.caption.monospacedDigit())
+                }
+                if let date = model.failureScanDate {
+                    Text("Scan started \(date.formatted(date: .omitted, time: .standard)) · \(model.failureQueuesCompleted)/\(model.failureQueueNames.count) queues scanned" + (model.failureScanHasMore ? " · partial results" : " · scan complete"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !model.newlyObservedFailures.isEmpty {
+                        Label("\(model.newlyObservedFailures.count) newly observed since the previous completed scan", systemImage: "sparkle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                Text("Scans retained failed jobs in batches of up to 500. Live queues can change during a scan. Counts cover scanned jobs, not lifetime failures. Discovery may have more queues; use Discover queues / Scan more in the sidebar. Refresh manually to check for new failures.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = model.failureScanError {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red).textSelection(.enabled)
+                }
+                TextField("Filter error groups or queue names", text: $search).textFieldStyle(.roundedBorder)
+                if groups.isEmpty {
+                    ContentUnavailableView(model.failureScanDate == nil ? "Scan to find failures" : "No matching failures in scanned jobs", systemImage: "checkmark.bubble", description: Text("Connect to Redis and discover queues, then scan their retained failures."))
+                }
+                ForEach(groups) { group in
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button {
+                            selectedGroup = selectedGroup == group.id ? nil : group.id
+                        } label: {
+                            HStack(alignment: .top) {
+                                Image(systemName: selectedGroup == group.id ? "chevron.down" : "chevron.right")
+                                Text(group.id).font(.subheadline.weight(.semibold)).multilineTextAlignment(.leading)
+                                Spacer(minLength: 8)
+                                Text(group.jobs.count.formatted()).monospacedDigit()
+                            }.contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        Text(group.queues.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                        if let first = model.failureFirstObserved[group.id], let last = model.failureLastObserved[group.id] {
+                            Text("Observed in this session: \(first.formatted(date: .omitted, time: .shortened)) – \(last.formatted(date: .omitted, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        let newCount = group.jobs.filter { model.newlyObservedFailures.contains("\($0.queueName):\($0.id)") }.count
+                        if newCount > 0 {
+                            Text("\(newCount) newly observed since the previous completed scan").font(.caption).foregroundStyle(.orange)
+                        }
+                        if let first = group.firstFailure, let last = group.lastFailure {
+                            Text("First failure \(first.formatted()) · Last failure \(last.formatted())")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let example = group.jobs.first {
+                            Text(example.payloadPreview).font(.caption.monospaced()).lineLimit(2).textSelection(.enabled)
+                        }
+                        if selectedGroup == group.id {
+                            Text("UUIDs and long hex identifiers are grouped together. Inspect individual jobs to compare full errors and payloads.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            ForEach(Array(group.jobs.prefix(50).enumerated()), id: \.offset) { _, job in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(job.name).font(.subheadline)
+                                        Text("\(job.queueName) · \(job.id)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                    }
+                                    Spacer()
+                                    Button("Inspect") { Task { await model.inspectJob(JobReference(prefix: model.activePrefix, queue: job.queueName, jobID: job.id)) } }
+                                        .disabled(model.isLoading)
+                                }
+                            }
+                            if group.jobs.count > 50 { Text("Showing 50 representative jobs.").font(.caption).foregroundStyle(.secondary) }
+                        }
+                    }.padding(16).dashboardSurface()
+                }
+            }.padding(24)
+        }
+    }
+}
