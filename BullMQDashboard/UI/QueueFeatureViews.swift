@@ -29,7 +29,7 @@ struct QueueRefreshControls: View {
             .font(.caption)
             Spacer()
             if model.isReadOnly { Label("Read-only", systemImage: "lock").font(.caption) }
-            Picker("Refresh", selection: Binding(get: { model.refreshInterval }, set: model.setRefreshInterval)) {
+            Picker("Refresh", selection: Binding(get: { model.refreshInterval }, set: { model.setRefreshInterval($0) })) {
                 Text("Manual").tag(0)
                 Text("Every 5s").tag(5)
                 Text("Every 15s").tag(15)
