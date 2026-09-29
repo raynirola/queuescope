@@ -4,6 +4,7 @@ import SwiftUI
 enum QueueWorkspaceView: String, CaseIterable, Identifiable {
     case overview
     case runs
+    case failures
     case flowGraph
     case schedulers
     case workers
@@ -14,6 +15,7 @@ enum QueueWorkspaceView: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .overview: "Overview"
+        case .failures: "Failure inbox"
         case .runs: "Runs"
         case .flowGraph: "Flow graph"
         case .schedulers: "Schedulers"
@@ -25,6 +27,7 @@ enum QueueWorkspaceView: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .overview: "rectangle.3.group"
+        case .failures: "exclamationmark.bubble"
         case .runs: "list.bullet.rectangle"
         case .flowGraph: "point.3.connected.trianglepath.dotted"
         case .schedulers: "calendar.badge.clock"
@@ -41,7 +44,9 @@ struct QueueDashboardView: View {
 
     var body: some View {
         Group {
-            if let queue = model.selectedQueue {
+            if selectedView == .failures {
+                FailureInboxView()
+            } else if let queue = model.selectedQueue {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         header(queue)
@@ -108,6 +113,8 @@ struct QueueDashboardView: View {
         case .runs:
             statusCards(queue)
             JobTableView()
+        case .failures:
+            FailureInboxView()
         case .flowGraph:
             JobFlowPanel()
         case .schedulers:

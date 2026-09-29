@@ -4,11 +4,16 @@ Native macOS SwiftUI dashboard for inspecting and operating BullMQ queues.
 
 QueueScope targets BullMQ `5.77.x` Redis layouts. It connects directly to Redis for dashboard reads, discovers BullMQ queues and loads saved queues, shows queue health, pages jobs by state, opens job payloads/failures in an inspector, and routes job mutations through BullMQ's official Node package.
 
+Read the [getting-started walkthrough](docs/GETTING_STARTED.md) to try the offline demo, connect through SSH, and investigate failures.
+
 ## Current Features
 
 - Native SwiftUI three-pane macOS interface.
 - Redis URL connection with `redis://` and `rediss://` parsing.
-- Saved connection profiles with credentials in macOS Keychain.
+- Saved connection profiles with credentials in macOS Keychain in release builds; prompt-free, separate local storage in development builds.
+- SSH tunnels using system OpenSSH, existing keys/agent, and verified known hosts.
+- Connection diagnostics, automatic first-connection discovery, and a read-only offline demo.
+- Failure inbox grouping retained errors across queues, with incremental scans and representative job inspection.
 - Queue discovery by prefix, plus manually added queues and saved display names/groups.
 - Exact job ID lookup and incremental name, failure-text, state, and creation-date filtering.
 - Configurable automatic refresh with last-updated, stale, and refresh-failure indicators.
@@ -26,7 +31,7 @@ QueueScope targets BullMQ `5.77.x` Redis layouts. It connects directly to Redis 
 
 QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `BullMQActionBridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, `Queue.add`, `Queue.pause`, and `Queue.resume`.
 
-The Xcode build packages the bridge and its locked production dependencies into `QueueScope.app`, so people using the built app do not run `npm install`. The build machine needs npm available so the `Package BullMQ action bridge` build phase can install the locked bridge dependencies into the app bundle. The app runs the packaged bridge with Node from `BULLMQ_NODE_PATH`, Homebrew, `/usr/local`, `/usr/bin`, or nvm; set `BULLMQ_ACTION_BRIDGE_PATH` only when deliberately overriding the packaged bridge during development.
+The Xcode build packages the bridge and its locked production dependencies into `QueueScope.app`, so people using the built app do not run `npm install`. The build machine needs npm available so the `Package BullMQ action bridge` build phase can install the locked bridge dependencies into the app bundle. The app bundles a pinned Node runtime, so job actions work without a separate Node installation. `BULLMQ_NODE_PATH` can override it for development; Homebrew, `/usr/local`, `/usr/bin`, and nvm are fallback locations for older bundles; set `BULLMQ_ACTION_BRIDGE_PATH` only when deliberately overriding the packaged bridge during development.
 
 Job actions have a 30-second deadline and support task cancellation. The app drains stdout and stderr while the bridge runs, with a 1 MiB limit per stream. If execution is interrupted, the action may already have reached Redis: refresh and inspect the job before retrying.
 
@@ -42,7 +47,7 @@ Job actions have a 30-second deadline and support task cancellation. The app dra
 
 ## Local Data
 
-Redis URLs are masked in the connection editor until explicitly revealed. Profile metadata is stored in preferences; complete connection URLs are stored in Keychain. Existing plaintext profiles migrate only after their Keychain writes succeed. A Keychain failure preserves the original data and reports an error.
+Redis URLs are masked in the connection editor until explicitly revealed. In release builds, profile metadata is stored in preferences and complete connection URLs are stored in Keychain. Debug builds use separate unencrypted local storage and never read release Keychain entries; save development profiles once to avoid repeated authorization prompts. Existing plaintext profiles migrate only after their Keychain writes succeed. A Keychain failure preserves the original data and reports an error.
 
 Metric history lives at `~/Library/Application Support/QueueScope/metrics-v2.json`. It retains up to 120 snapshots per connection/queue and caps the active file at 4 MiB. Only the newest snapshot per queue carries native metrics, limited to the latest 1,440 minute buckets supported by the charts. Old snapshots without a connection identity are archived alongside that file as `metrics-legacy-*.json`; they are not mixed into current charts.
 

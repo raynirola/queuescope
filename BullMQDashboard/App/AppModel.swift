@@ -63,6 +63,11 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = "Not connected"
     @Published var lastError: String?
 
+    @Published private(set) var isDemo = false
+    @Published private(set) var isTestingConnection = false
+    @Published private(set) var connectionTestResult: String?
+    @Published var useSSH = false
+    @Published var sshSettings = SSHConnectionSettings()
     @Published var connectionReadOnly = false
     @Published var refreshInterval = 15
     @Published var lastRefreshedAt: Date?
@@ -73,6 +78,79 @@ final class AppModel: ObservableObject {
     @Published private(set) var searchedJobCount = 0
     @Published private(set) var discoveryCursor = "0"
     @Published private(set) var hasDiscoveredQueues = false
+    @Published private(set) var failureJobs: [JobSummary] = []
+    @Published private(set) var failureFirstObserved: [String: Date] = [:]
+    @Published private(set) var failureLastObserved: [String: Date] = [:]
+    @Published private(set) var failureScanDate: Date?
+    @Published private(set) var failureScanError: String?
+    @Published private(set) var failureQueuesCompleted = 0
+    @Published private(set) var failureQueueNames: [String] = []
+    @Published private(set) var failureScanHasMore = false
+    @Published private(set) var isScanningFailures = false
+    @Published private(set) var newlyObservedFailures: Set<String> = []
+    private var previousFailureIDs: Set<String>?
+    private var failurePage = 0
+    private var failureScanRevision = 0
+    var failureGroups: [FailureGroup] { FailureGroup.grouped(failureJobs) }
+
+    func scanFailures(restart: Bool = true) async {
+        guard isConnected, !isScanningFailures else { return }
+        if restart {
+            if failureScanDate != nil, !failureScanHasMore, failureScanError == nil { previousFailureIDs = Set(failureJobs.map { "\($0.queueName):\($0.id)" }) }
+            failureJobs = []
+            newlyObservedFailures = []
+            failureQueuesCompleted = 0
+            failurePage = 0
+            failureQueueNames = Array(Set(queues.map(\.name))).sorted()
+            failureScanHasMore = !failureQueueNames.isEmpty
+            failureScanDate = Date()
+        }
+        guard failureScanHasMore else { return }
+        let generation = connectionGeneration
+        let revision = failureScanRevision
+        let scanPrefix = activePrefix
+        isScanningFailures = true
+        failureScanError = nil
+        defer { if revision == failureScanRevision { isScanningFailures = false } }
+        do {
+            // At most 500 entries per user action, including queues with no failures.
+            for _ in 0..<5 where failureQueuesCompleted < failureQueueNames.count {
+                try Task.checkCancellation()
+                let queue = failureQueueNames[failureQueuesCompleted]
+                let page = try await engine.getJobs(queueName: queue, prefix: scanPrefix, state: .failed, page: failurePage, pageSize: 100)
+                guard generation == connectionGeneration, revision == failureScanRevision else { return }
+                var seen = Set(failureJobs.map { "\($0.queueName):\($0.id)" })
+                let fresh = page.jobs.filter { seen.insert("\($0.queueName):\($0.id)").inserted }
+                failureJobs.append(contentsOf: fresh)
+                for job in fresh {
+                    let signature = FailureGroup.signature(job.failedReason)
+                    failureFirstObserved[signature] = failureFirstObserved[signature] ?? Date()
+                    failureLastObserved[signature] = Date()
+                }
+                if let previousFailureIDs {
+                    newlyObservedFailures.formUnion(fresh.map { "\($0.queueName):\($0.id)" }.filter { !previousFailureIDs.contains($0) })
+                }
+                failurePage += 1
+                if failurePage * 100 >= page.total || page.jobs.isEmpty {
+                    failureQueuesCompleted += 1
+                    failurePage = 0
+                }
+            }
+            failureScanHasMore = failureQueuesCompleted < failureQueueNames.count
+        } catch {
+            guard generation == connectionGeneration, revision == failureScanRevision else { return }
+            if !(error is CancellationError) { failureScanError = error.localizedDescription }
+            if let failure = error as? BullMQDashboardError {
+                switch failure {
+                case .connectionLost, .notConnected:
+                    isConnected = false
+                    lastRefreshError = error.localizedDescription
+                default: break
+                }
+            }
+        }
+    }
+
     @Published var lookupJobID = ""
     @Published var flowJobID = ""
     @Published private(set) var jobFlow = JobFlow()
@@ -114,7 +192,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshAutomatically() async {
-        guard isConnected, selectedQueue != nil, appliedJobFilter == nil, !isLoading, lastRefreshError == nil, refreshInterval > 0 else { return }
+        guard selectedView != .failures, isConnected, selectedQueue != nil, appliedJobFilter == nil, !isLoading, lastRefreshError == nil, refreshInterval > 0 else { return }
         await refreshSelectedQueue()
     }
 
@@ -148,8 +226,7 @@ final class AppModel: ObservableObject {
     }
 
     func inspectJob(_ reference: JobReference? = nil) async {
-        guard let queue = selectedQueue else { return }
-        let ref = reference ?? JobReference(prefix: activePrefix, queue: queue.name, jobID: lookupJobID.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let ref = reference ?? selectedQueue.map({ JobReference(prefix: activePrefix, queue: $0.name, jobID: lookupJobID.trimmingCharacters(in: .whitespacesAndNewlines)) }) else { return }
         guard !ref.jobID.isEmpty else { return }
         let generation = connectionGeneration
         resetSelectedJob()
@@ -210,7 +287,8 @@ final class AppModel: ObservableObject {
         !activeLoadingPhases.isEmpty
     }
 
-    private let engine: BullMQEngine
+    private var engine: BullMQEngine
+    private let liveEngine: BullMQEngine
     private let profileStore: ConnectionProfileStore
     private let snapshotStore: MetricSnapshotStore
     private let queueNameStore: QueueNameStore
@@ -244,6 +322,7 @@ final class AppModel: ObservableObject {
         workspacePreferenceStore: QueueWorkspacePreferenceStore = QueueWorkspacePreferenceStore()
     ) {
         self.engine = engine
+        self.liveEngine = engine
         self.profileStore = profileStore
         self.snapshotStore = snapshotStore
         self.queueNameStore = queueNameStore
@@ -295,21 +374,84 @@ final class AppModel: ObservableObject {
         jobs.filter { selectedJobIDs.contains($0.id) }
     }
 
+    func testConnection() async {
+        guard !isTestingConnection else { return }
+        isTestingConnection = true
+        connectionTestResult = "Testing connection…"
+        let tester = BullMQRedisEngine()
+        do {
+            var config = try RedisURLParser.parse(redisURL, prefix: prefix)
+            config.ssh = useSSH ? sshSettings : nil
+            config.isReadOnly = true
+            try await tester.connect(config)
+            let discovery = try await tester.discoverQueues(prefix: config.prefix, cursor: "0")
+            connectionTestResult = "Connection and queue discovery succeeded for \(config.host):\(config.port). \(discovery.names.count) queues in the first scan batch."
+        } catch {
+            connectionTestResult = Self.connectionAdvice(error)
+        }
+        await tester.disconnect()
+        isTestingConnection = false
+    }
+
+    static func connectionAdvice(_ error: Error) -> String {
+        let message = error.localizedDescription
+        let lower = message.lowercased()
+        if lower.contains("wrongpass") || lower.contains("noauth") {
+            return "Redis authentication failed. Check the username and password in the Redis URL. Reserved characters in credentials must be percent-encoded. \(message)"
+        }
+        if lower.contains("noperm") {
+            return "Redis denied a command. Check your Redis ACL permissions for PING and dashboard reads such as SCAN, HGETALL, and sorted-set/list reads. \(message)"
+        }
+        if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+            return "TLS connection failed. Use rediss:// for TLS and the certificate's Redis hostname, including when using SSH. \(message)"
+        }
+        return message
+    }
+
+    func startDemo() async {
+        guard !isLoading, activeJobAction == nil else { return }
+        await disconnect()
+        let generation = connectionGeneration
+        let demo = DemoBullMQEngine()
+        engine = demo
+        isDemo = true
+        var config = try! RedisURLParser.parse("redis://demo.local", defaultName: "Demo workspace", prefix: "bull")
+        config.isReadOnly = true
+        activeConnection = config
+        isConnected = true
+        await discoverMoreQueues()
+        guard generation == connectionGeneration, isDemo else { return }
+        for index in queues.indices {
+            let overview = try? await demo.getQueueOverview(queueName: queues[index].name, prefix: config.prefix)
+            guard generation == connectionGeneration, isDemo else { return }
+            if let overview { queues[index] = overview }
+        }
+        selectedQueue = queues.first
+        selectedView = .failures
+        statusMessage = "Offline demo · sample data · read-only"
+        await scanFailures()
+    }
+
     func connect() async {
         guard !activeLoadingPhases.contains(.connecting), activeJobAction == nil else { return }
         let requestedURL = redisURL
         let requestedPrefix = prefix
         let requestedName = connectionProfileName
+        let requestedSSH = useSSH ? sshSettings : nil
         let requestedReadOnly = connectionReadOnly
         await runLoading(.connecting) {
             isConnected = false
             activeConnection = nil
             resetQueueStateForNewConnection()
             await engine.disconnect()
+            engine = liveEngine
+            isDemo = false
             var parsed = try RedisURLParser.parse(requestedURL, defaultName: requestedName, prefix: requestedPrefix)
+            parsed.ssh = requestedSSH
             parsed.isReadOnly = requestedReadOnly
             statusMessage = "Connecting to \(parsed.host):\(parsed.port)…"
-            try await engine.connect(parsed)
+            do { try await engine.connect(parsed) }
+            catch { throw BullMQDashboardError.redis(Self.connectionAdvice(error)) }
             activeConnection = parsed
             do { snapshots = try snapshotStore.load(scope: queueScope(for: parsed)) }
             catch { lastError = "Could not load metric history: \(error.localizedDescription)" }
@@ -322,6 +464,10 @@ final class AppModel: ObservableObject {
                 statusMessage = "Connected. Discover queues or add one by name."
             }
         }
+        if isConnected, queues.isEmpty {
+            await discoverMoreQueues()
+            if let first = queues.first { selectQueue(first) }
+        }
     }
 
     func disconnect() async {
@@ -331,6 +477,8 @@ final class AppModel: ObservableObject {
             activeConnection = nil
             resetQueueStateForNewConnection()
             await engine.disconnect()
+            engine = liveEngine
+            isDemo = false
             statusMessage = "Not connected"
         }
     }
@@ -338,13 +486,14 @@ final class AppModel: ObservableObject {
     func saveCurrentProfile() {
         do {
             let parsed = try RedisURLParser.parse(redisURL, prefix: prefix)
-            let profile = RedisConnectionProfile(
+            var profile = RedisConnectionProfile(
                 name: connectionProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? parsed.name : connectionProfileName.trimmingCharacters(in: .whitespacesAndNewlines),
                 tag: connectionProfileTag,
                 redisURL: redisURL,
                 prefix: parsed.prefix,
                 isReadOnly: connectionReadOnly
             )
+            profile.ssh = useSSH ? sshSettings : nil
             let savedProfiles = try profileStore.load()
             try profileStore.save(savedProfiles + [profile])
             profiles = savedProfiles + [profile]
@@ -357,9 +506,11 @@ final class AppModel: ObservableObject {
     func connect(profile: RedisConnectionProfile) async {
         guard !activeLoadingPhases.contains(.connecting), activeJobAction == nil else { return }
         guard !profile.credentialsInKeychain else {
-            lastError = "Credentials for \(profile.name) are missing from Keychain. Remove this profile and save it again with its complete Redis URL."
+            lastError = "Saved credentials for \(profile.name) are missing. Remove this profile and save it again with its complete Redis URL."
             return
         }
+        useSSH = profile.ssh != nil
+        sshSettings = profile.ssh ?? SSHConnectionSettings()
         connectionReadOnly = profile.isReadOnly
         redisURL = profile.redisURL
         prefix = profile.prefix
@@ -411,7 +562,7 @@ final class AppModel: ObservableObject {
         runPage = 0
         applyCachedPanelData(for: queue.name)
         persistCurrentWorkspacePreference()
-        scheduleRefresh(for: selectedView)
+        if selectedView != .failures { scheduleRefresh(for: selectedView) }
     }
 
     func selectWorkspaceView(_ view: QueueWorkspaceView) {
@@ -426,7 +577,7 @@ final class AppModel: ObservableObject {
             applyCachedPanelData(for: selectedQueue.name)
         }
         persistCurrentWorkspacePreference()
-        scheduleRefresh(for: view)
+        if view != .failures || failureScanDate == nil { scheduleRefresh(for: view) }
     }
 
     func addManualQueue(named rawName: String, displayName rawDisplayName: String? = nil) async {
@@ -536,6 +687,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSelectedQueue(for view: QueueWorkspaceView) async {
+        if view == .failures { await scanFailures(); return }
         let requestID = nextRefreshRequestID()
         await runLoading(loadingPhase(for: view)) {
             do {
@@ -816,6 +968,8 @@ final class AppModel: ObservableObject {
         self.selectedQueue = updatedOverview
 
         switch view {
+        case .failures:
+            break
         case .overview:
             let loadedSnapshots = try await engine.getMetrics(queueName: queueName, prefix: activePrefix)
             let timingJobs = try await loadMetricTimingJobs(queueName: queueName)
@@ -1358,6 +1512,18 @@ final class AppModel: ObservableObject {
         jobFlow = JobFlow()
         flowReference = nil
         selectedJobPrefix = nil
+        failureScanRevision += 1
+        isScanningFailures = false
+        failureJobs = []
+        failureFirstObserved = [:]
+        failureLastObserved = [:]
+        failureScanDate = nil
+        failureScanError = nil
+        failureScanHasMore = false
+        failureQueuesCompleted = 0
+        failureQueueNames = []
+        previousFailureIDs = nil
+        newlyObservedFailures = []
         connectionGeneration += 1
         refreshRequestID += 1
         refreshTask?.cancel()
@@ -1414,7 +1580,9 @@ final class AppModel: ObservableObject {
     }
 
     private func queueScope(for config: RedisConnectionConfig) -> String {
-        "\(config.host):\(config.port)/\(config.database):\(config.prefix)"
+        let destination = "\(config.host):\(config.port)/\(config.database):\(config.prefix)"
+        guard let ssh = config.ssh else { return destination }
+        return "ssh:\(ssh.user)@\(ssh.host):\(ssh.port)/\(destination)"
     }
 
     private func cacheKey(_ queueName: String) -> String {
@@ -1468,6 +1636,7 @@ final class AppModel: ObservableObject {
 
     private func loadingPhase(for view: QueueWorkspaceView) -> LoadingPhase {
         switch view {
+        case .failures: .overview
         case .overview: .overview
         case .runs: .runs
         case .flowGraph: .overview

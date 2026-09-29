@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 
 actor RedisRESPClient {
     private var connection: NWConnection?
@@ -14,12 +15,19 @@ actor RedisRESPClient {
 
     func connect(_ config: RedisConnectionConfig) async throws {
         disconnect()
-        guard let port = UInt16(exactly: config.port), port > 0, config.database >= 0 else {
+        guard let port = UInt16(exactly: config.transportPort ?? config.port), port > 0, config.database >= 0 else {
             throw BullMQDashboardError.invalidRedisURL
         }
-        let parameters: NWParameters = config.useTLS ? .tls : .tcp
+        let parameters: NWParameters
+        if config.useTLS {
+            let tls = NWProtocolTLS.Options()
+            sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, config.host)
+            parameters = NWParameters(tls: tls)
+        } else {
+            parameters = .tcp
+        }
         let connection = NWConnection(
-            host: NWEndpoint.Host(config.host),
+            host: NWEndpoint.Host(config.transportHost ?? config.host),
             port: NWEndpoint.Port(rawValue: port) ?? 6379,
             using: parameters
         )

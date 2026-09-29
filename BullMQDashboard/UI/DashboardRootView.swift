@@ -13,6 +13,11 @@ struct DashboardRootView: View {
         .animation(.snappy(duration: 0.18), value: isInspectorVisible)
         .animation(.snappy(duration: 0.18), value: model.inspectorRevision)
         .toolbar {
+            if model.isDemo {
+                ToolbarItem(placement: .principal) {
+                    Label("Offline demo · sample data", systemImage: "play.rectangle")
+                }
+            }
             ToolbarItem(placement: .navigation) {
                 Button {
                     isSidebarVisible.toggle()
@@ -165,7 +170,7 @@ private struct WorkspaceViewSidebar: View {
                 Text("Workspace")
                     .font(.headline)
             }
-            Text(model.selectedQueue?.resolvedDisplayName ?? "Select a queue")
+            Text(model.selectedView == .failures ? "All queues" : (model.selectedQueue?.resolvedDisplayName ?? "Select a queue"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -224,6 +229,7 @@ private struct WorkspaceViewRow: View {
     private var tint: Color {
         switch view {
         case .overview: .blue
+        case .failures: .red
         case .runs: .teal
         case .flowGraph: .purple
         case .schedulers: .orange

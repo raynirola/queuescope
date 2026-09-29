@@ -178,6 +178,9 @@ struct BullMQMutationClient: Sendable {
             return override
         }
 
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/node").path
+        if FileManager.default.isExecutableFile(atPath: bundled) { return bundled }
+
         for path in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] where FileManager.default.isExecutableFile(atPath: path) {
             return path
         }
@@ -207,8 +210,9 @@ private struct BridgeRedisConfig {
 
     var dictionary: [String: Any] {
         var value: [String: Any] = [
-            "host": config.host,
-            "port": config.port,
+            "host": config.transportHost ?? config.host,
+            "tlsServerName": config.host,
+            "port": config.transportPort ?? config.port,
             "database": config.database,
             "useTLS": config.useTLS
         ]

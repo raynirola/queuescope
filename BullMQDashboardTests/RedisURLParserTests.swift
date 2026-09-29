@@ -150,6 +150,35 @@ final class PersistenceTests: XCTestCase {
         try body(defaults, directory.appendingPathComponent("metrics.json"))
     }
 
+    #if DEBUG
+    func testDevelopmentProfilesPersistWithoutReadingReleaseCredentials() throws {
+        try withStorage { defaults, _ in
+            let releaseCredentials = MemoryConnectionCredentials()
+            let release = ConnectionProfileStore(defaults: defaults, credentials: releaseCredentials)
+            let productionProfile = RedisConnectionProfile(name: "Release", redisURL: "redis://user:release-secret@localhost")
+            try release.save([productionProfile])
+            release.saveLastActiveProfileID(productionProfile.id)
+            let originalMetadata = defaults.data(forKey: "redis.connection.profiles")
+
+            let development = ConnectionProfileStore(defaults: defaults)
+            XCTAssertTrue(try development.load().isEmpty)
+            XCTAssertNil(development.loadLastActiveProfileID())
+            let profile = RedisConnectionProfile(name: "Development", redisURL: "redis://user:dev-secret@localhost")
+            try development.save([profile])
+            development.saveLastActiveProfileID(profile.id)
+            let relaunched = ConnectionProfileStore(defaults: defaults)
+            XCTAssertEqual(try relaunched.load(), [profile])
+            XCTAssertEqual(relaunched.loadLastActiveProfileID(), profile.id)
+            try relaunched.delete(profile)
+            XCTAssertTrue(try development.load().isEmpty)
+            XCTAssertNil(try DevelopmentConnectionCredentials(defaults: defaults).read(id: profile.id))
+            XCTAssertEqual(defaults.data(forKey: "redis.connection.profiles"), originalMetadata)
+            XCTAssertEqual(try release.load(), [productionProfile])
+            XCTAssertEqual(release.loadLastActiveProfileID(), productionProfile.id)
+        }
+    }
+    #endif
+
     func testProfileSecretsAreOnlyStoredInCredentialStore() throws {
         try withStorage { defaults, _ in
             let credentials = MemoryConnectionCredentials()
@@ -254,5 +283,33 @@ final class PersistenceTests: XCTestCase {
             XCTAssertEqual(archives.count, 1)
             XCTAssertEqual(try Data(contentsOf: archives[0]), legacy)
         }
+    }
+}
+
+final class ConnectionFeatureTests: XCTestCase {
+    func testSSHArgumentsPreserveHostVerificationAndRejectOptionInjection() throws {
+        let settings = SSHConnectionSettings(host: "bastion", user: "ray", port: 2222, identityFile: "/tmp/key with spaces")
+        let args = try settings.arguments(localPort: 12345, redisHost: "::1", redisPort: 6379, controlPath: "/tmp/control")
+        XCTAssertTrue(args.contains("StrictHostKeyChecking=yes"))
+        XCTAssertTrue(args.contains("BatchMode=yes"))
+        XCTAssertTrue(args.contains("127.0.0.1:12345:[::1]:6379"))
+        XCTAssertTrue(args.contains("/tmp/key with spaces"))
+        for host in ["-oProxyCommand=bad", "host;bad", "host\nother"] {
+            XCTAssertThrowsError(try SSHConnectionSettings(host: host).arguments(localPort: 12345, redisHost: "localhost", redisPort: 6379, controlPath: "/tmp/control"))
+        }
+    }
+
+    func testFailureSignaturesPreserveErrorCodesAndNormalizeUUIDs() {
+        XCTAssertEqual(FailureGroup.signature("Missing 123e4567-e89b-12d3-a456-426614174000"), FailureGroup.signature("Missing 123e4567-e89b-12d3-a456-426614174999"))
+        XCTAssertNotEqual(FailureGroup.signature("HTTP 401"), FailureGroup.signature("HTTP 429"))
+        XCTAssertEqual(FailureGroup.signature(nil), "No failure reason recorded")
+    }
+
+    func testSSHProfileRoundTripKeepsCredentialsSeparate() throws {
+        var profile = RedisConnectionProfile(name: "SSH", redisURL: "rediss://user:secret@redis.internal:6380")
+        profile.ssh = SSHConnectionSettings(host: "bastion", user: "ray", port: 2222, identityFile: "~/.ssh/id_ed25519")
+        let data = try JSONEncoder().encode(profile)
+        XCTAssertEqual(try JSONDecoder().decode(RedisConnectionProfile.self, from: data).ssh, profile.ssh)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("secret"))
     }
 }

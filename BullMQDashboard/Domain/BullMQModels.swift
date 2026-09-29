@@ -40,6 +40,7 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
     var tag: String
     var redisURL: String
     var isReadOnly = false
+    var ssh: SSHConnectionSettings? = nil
     var credentialsInKeychain = false
     var prefix: String
 
@@ -62,6 +63,7 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
         name = try container.decode(String.self, forKey: .name)
         isReadOnly = try container.decodeIfPresent(Bool.self, forKey: .isReadOnly) ?? false
         tag = try container.decodeIfPresent(String.self, forKey: .tag) ?? "local"
+        ssh = try container.decodeIfPresent(SSHConnectionSettings.self, forKey: .ssh)
         credentialsInKeychain = try container.decodeIfPresent(Bool.self, forKey: .credentialsInKeychain) ?? false
         redisURL = try container.decodeIfPresent(String.self, forKey: .redisURL)
             ?? container.decode(String.self, forKey: .urlWithoutSecret)
@@ -70,6 +72,7 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(ssh, forKey: .ssh)
         try container.encode(isReadOnly, forKey: .isReadOnly)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
@@ -89,12 +92,16 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
         case redisURL
         case urlWithoutSecret
         case isReadOnly
+        case ssh
         case credentialsInKeychain
         case prefix
     }
 }
 
 struct RedisConnectionConfig: Equatable, Sendable {
+    var ssh: SSHConnectionSettings? = nil
+    var transportHost: String? = nil
+    var transportPort: Int? = nil
     var isReadOnly = false
     var profileID: UUID?
     var name: String
@@ -419,4 +426,28 @@ struct JobFlow: Sendable {
     var nodes: [JobFlowNode] = []
     var edges: [JobFlowEdge] = []
     var truncated = false
+}
+
+/// Session-local grouping of retained failed jobs, not a historical error counter.
+struct FailureGroup: Identifiable {
+    let id: String
+    var jobs: [JobSummary]
+    var queues: [String] { Array(Set(jobs.map(\.queueName))).sorted() }
+    var firstFailure: Date? { jobs.compactMap(\.finishedOn).min() }
+    var lastFailure: Date? { jobs.compactMap(\.finishedOn).max() }
+
+    static func signature(_ reason: String?) -> String {
+        let text = reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return "No failure reason recorded" }
+        // Only normalize unmistakable identifiers; retain error codes and status numbers.
+        return text.components(separatedBy: .newlines).first!
+            .replacingOccurrences(of: #"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"#, with: "<id>", options: .regularExpression)
+            .replacingOccurrences(of: #"\b[0-9a-fA-F]{24,64}\b"#, with: "<id>", options: .regularExpression)
+    }
+
+    static func grouped(_ jobs: [JobSummary]) -> [FailureGroup] {
+        Dictionary(grouping: jobs, by: { signature($0.failedReason) })
+            .map { FailureGroup(id: $0.key, jobs: $0.value.sorted { ($0.finishedOn ?? .distantPast) > ($1.finishedOn ?? .distantPast) }) }
+            .sorted { $0.jobs.count == $1.jobs.count ? $0.id < $1.id : $0.jobs.count > $1.jobs.count }
+    }
 }

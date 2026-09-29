@@ -477,7 +477,8 @@ struct ConnectionManagerView: View {
             }
 
             Divider()
-
+            connectionActions.padding(.horizontal, 16).padding(.vertical, 10)
+            Divider()
             footer
         }
         .frame(width: 695, height: 520)
@@ -590,6 +591,46 @@ struct ConnectionManagerView: View {
                 Spacer()
             }
 
+            Toggle("Connect through SSH", isOn: $model.useSSH)
+            if model.useSSH {
+                TextField("SSH host or ~/.ssh/config alias", text: $model.sshSettings.host)
+                HStack {
+                    TextField("SSH username (optional)", text: $model.sshSettings.user)
+                    TextField("Port", value: $model.sshSettings.port, format: .number.grouping(.never)).frame(width: 65)
+                }
+                TextField("Private key path (optional)", text: $model.sshSettings.identityFile)
+                Text("Uses your SSH agent or key and known hosts. Connect in Terminal once to verify a new host. The Redis URL is resolved from the SSH server; use its Redis hostname, including for TLS.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Test connection") { Task { await model.testConnection() } }
+                    .disabled(model.isTestingConnection)
+                if model.isTestingConnection { ProgressView().controlSize(.small) }
+            }
+            if let result = model.connectionTestResult {
+                Text(result).font(.caption).textSelection(.enabled)
+            }
+            Button("Explore offline demo") {
+                Task { await model.startDemo(); if model.isDemo { dismiss() } }
+            }.disabled(model.isLoading)
+            Text("Supports BullMQ 5.77.x. Start with read-only access, discover queues, then open the Failure inbox to investigate errors.")
+                .font(.caption).foregroundStyle(.secondary)
+
+
+            #if DEBUG
+            Text("Development build: saved connections use local, unencrypted storage to avoid Keychain prompts. Release profiles are separate. Save your development connection once.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #endif
+
+
+
+            Spacer()
+        }
+    }
+
+    private var connectionActions: some View {
             HStack(spacing: 10) {
                 Button {
                     model.saveCurrentProfile()
@@ -615,9 +656,6 @@ struct ConnectionManagerView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.activeJobAction != nil || model.activeLoadingPhases.contains(.connecting))
             }
-
-            Spacer()
-        }
     }
 
     private var savedProfiles: some View {
