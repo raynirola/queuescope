@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QueueScope — BullMQ, at your fingertips</title>
+<meta name="description" content="A free, open-source macOS app for BullMQ. Group failures, inspect jobs, and connect to private Redis through SSH. No dashboard server required.">
+<link rel="canonical" href="https://raynirola.github.io/queuescope/">
+<meta property="og:title" content="QueueScope — Find the failure. Get back to shipping.">
+<meta property="og:description" content="A free, native macOS dashboard for BullMQ. No dashboard server required.">
+<meta property="og:image" content="https://raynirola.github.io/queuescope/assets/failure-inbox.png">
+<meta property="og:url" content="https://raynirola.github.io/queuescope/">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#101716"><link rel="stylesheet" href="styles.css"><script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap"><a class="brand" href="./" aria-label="QueueScope home"><span class="mark" aria-hidden="true">Q</span> QueueScope</a><nav aria-label="Main navigation"><a href="#tour">Product tour</a><a href="#install">Install</a><a href="https://github.com/raynirola/queuescope">GitHub ↗</a></nav></header>
+<main id="main">
+<section class="hero wrap">
+<div class="eyebrow"><span class="dot"></span> Native macOS · Open source · v0.5.0</div>
+<h1>Find the failure.<br><span>Get back to shipping.</span></h1>
+<p class="lede">Your BullMQ queues, without another dashboard to deploy. Group related failures, inspect the job behind them, and connect to private Redis—all from your Mac.</p>
+<div class="actions"><a class="button primary" href="https://github.com/raynirola/queuescope/releases/download/v0.5.0/QueueScope-0.5.0-macOS.zip">Download for Mac <span aria-hidden="true">↓</span></a><a class="button secondary" href="#tour">See it in action <span aria-hidden="true">↘</span></a></div>
+<p class="fine">Free · macOS 14+ · Apple Silicon &amp; Intel · Signed and notarized</p>
+<div class="app-frame"><div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>QueueScope / Failure inbox</span></div><img src="assets/failure-inbox.png" width="2240" height="1440" alt="QueueScope showing 54 sample failures grouped into three errors across email, report, and webhook queues."></div>
+<div class="proof"><span>No account required</span><span>Credentials in Keychain</span><span>Node runtime included</span><span>MIT licensed</span></div>
+</section>
+<section class="wrap section" id="tour">
+<div class="section-heading"><div><p class="eyebrow">A shorter path to an answer</p><h2>From “something broke”<br>to the job that explains it.</h2></div><p>Explore a three-step walkthrough using real app screens and offline sample data.</p></div>
+<div class="tour-layout"><div class="tour-steps" role="tablist" aria-label="Product walkthrough" aria-orientation="vertical">
+<button type="button" class="step" role="tab" id="tab-0" aria-selected="true" aria-controls="panel-0" tabindex="0"><span class="step-number">01</span><span><strong>Find the pattern</strong><small>See related errors together, across queues.</small></span></button>
+<button type="button" class="step" role="tab" id="tab-1" aria-selected="false" aria-controls="panel-1" tabindex="-1"><span class="step-number">02</span><span><strong>Inspect the evidence</strong><small>Read payloads, attempts, and stack traces.</small></span></button>
+<button type="button" class="step" role="tab" id="tab-2" aria-selected="false" aria-controls="panel-2" tabindex="-1"><span class="step-number">03</span><span><strong>Follow the dependency</strong><small>Trace parent and child jobs across queues.</small></span></button>
+<p class="tour-note">Try it yourself: choose <strong>Explore offline demo</strong> in Connection Manager. No Redis connection needed.</p>
+</div><div class="tour-panels">
+<div role="tabpanel" id="panel-0" aria-labelledby="tab-0" tabindex="0"><img loading="lazy" src="assets/failure-inbox.png" width="2240" height="1440" alt="Three failure groups in the offline demo."><p>Scan retained failures in bounded batches. Coverage and observation timestamps make it clear what you’re looking at.</p></div>
+<div role="tabpanel" id="panel-1" aria-labelledby="tab-1" tabindex="0" hidden><img loading="lazy" class="inspector" src="assets/job-inspector.png" width="1000" height="1700" alt="Job inspector with sample JSON, failure reason, and stack trace."><p>Open an individual job to see the full context. On your own writable connection, retry, duplicate, promote, or remove eligible jobs.</p></div>
+<div role="tabpanel" id="panel-2" aria-labelledby="tab-2" tabindex="0" hidden><img loading="lazy" src="assets/flow-graph.png" width="2240" height="1700" alt="A sample BullMQ parent job connected to its child in the flow view."><p>Follow a blocked workflow to the child job behind it. Inspect jobs across queues without losing the thread.</p></div>
+</div></div>
+</section>
+<section class="wrap section"><p class="eyebrow">Built for the way you work</p><div class="features"><article><span class="feature-icon" aria-hidden="true">↳</span><h3>Private Redis, reachable</h3><p>Connect through SSH with existing keys or an agent. Known-host checks and Redis TLS verification stay intact.</p></article><article><span class="feature-icon" aria-hidden="true">⌘</span><h3>A proper Mac app</h3><p>Native controls, light and dark appearances, local connections, and no dashboard service to run.</p></article><article><span class="feature-icon" aria-hidden="true">◎</span><h3>Look before you act</h3><p>Start with a read-only profile. Inspect payloads and state before using BullMQ-backed job actions.</p></article></div></section>
+<section class="wrap section install" id="install"><div><p class="eyebrow">Ready when your queues aren’t</p><h2>One app.<br>No extra runtime.</h2><p>Download the ZIP, move QueueScope to Applications, and connect. Updates are available from the app menu.</p><a class="button primary" href="https://github.com/raynirola/queuescope/releases/download/v0.5.0/QueueScope-0.5.0-macOS.zip">Download QueueScope 0.5.0 ↓</a><p class="fine">macOS 14 or later · BullMQ 5.77.x</p></div><div class="terminal"><div class="terminal-title">Prefer Homebrew?</div><code>brew install --cask raynirola/tap/queuescope</code><button id="copy-install" class="copy" type="button">Copy command</button><span id="copy-status" role="status" aria-live="polite"></span><p>Our own tap. Same signed and notarized app.</p><a href="https://github.com/raynirola/homebrew-tap">View the cask ↗</a></div></section>
+<section class="wrap section pilot"><p class="eyebrow">Help shape what comes next</p><h2>Built around real debugging.</h2><p>Found a rough edge or missing feature? Tell us what you were trying to do. Please keep credentials and customer data out of public issues.</p><a class="button secondary" href="https://github.com/raynirola/queuescope/issues">Share feedback ↗</a></section>
+</main>
+<footer class="wrap"><a class="brand" href="./">QueueScope</a><p>Made by Ray Nirola. Free and open source.</p><nav aria-label="Footer"><a href="privacy.html">Privacy</a><a href="https://github.com/raynirola/queuescope/blob/main/docs/GETTING_STARTED.md">Getting started</a><a href="https://github.com/raynirola/queuescope/issues">Support</a></nav></footer>
+</body></html>

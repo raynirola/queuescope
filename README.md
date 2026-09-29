@@ -1,5 +1,11 @@
 # QueueScope
 
+[Website and product tour](https://raynirola.github.io/queuescope/) · [Privacy](https://raynirola.github.io/queuescope/privacy.html)
+
+```sh
+brew install --cask raynirola/tap/queuescope
+```
+
 Native macOS SwiftUI dashboard for inspecting and operating BullMQ queues.
 
 QueueScope targets BullMQ `5.77.x` Redis layouts. It connects directly to Redis for dashboard reads, discovers BullMQ queues and loads saved queues, shows queue health, pages jobs by state, opens job payloads/failures in an inspector, and routes job mutations through BullMQ's official Node package.
