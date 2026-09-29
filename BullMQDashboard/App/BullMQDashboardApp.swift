@@ -8,9 +8,12 @@ struct BullMQDashboardApp: App {
 
     var body: some Scene {
         WindowGroup {
-            DashboardRootView()
-                .environmentObject(appModel)
-                .frame(minWidth: 1280, minHeight: 780)
+            if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+               NSClassFromString("XCTestCase") == nil {
+                DashboardRootView()
+                    .environmentObject(appModel)
+                    .frame(minWidth: 1280, minHeight: 780)
+            }
         }
         .commands {
             CommandGroup(replacing: .appInfo) {

@@ -20,16 +20,27 @@ enum RedisURLParser {
         if path.isEmpty {
             database = 0
         } else {
-            database = Int(path) ?? 0
+            guard let value = Int(path), value >= 0, !path.contains("/") else {
+                throw BullMQDashboardError.redis("Redis database must be a non-negative integer.")
+            }
+            database = value
+        }
+
+        let port = components.port ?? 6379
+        guard (1...65535).contains(port) else {
+            throw BullMQDashboardError.redis("Redis port must be between 1 and 65535.")
+        }
+        guard !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BullMQDashboardError.redis("BullMQ prefix must not be empty.")
         }
 
         return RedisConnectionConfig(
             profileID: nil,
             name: defaultName,
             host: host,
-            port: components.port ?? 6379,
-            username: components.user?.removingPercentEncoding,
-            password: components.password?.removingPercentEncoding,
+            port: port,
+            username: components.user,
+            password: components.password,
             database: database,
             useTLS: scheme == "rediss",
             prefix: prefix

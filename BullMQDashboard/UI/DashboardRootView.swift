@@ -11,7 +11,7 @@ struct DashboardRootView: View {
         rootSplit
         .frame(minWidth: 1120, minHeight: 640)
         .animation(.snappy(duration: 0.18), value: isInspectorVisible)
-        .animation(.snappy(duration: 0.18), value: model.selectedJobDetail?.id)
+        .animation(.snappy(duration: 0.18), value: model.inspectorRevision)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -51,8 +51,18 @@ struct DashboardRootView: View {
                 isConnectionManagerVisible = true
             }
         }
-        .onChange(of: model.selectedJobDetail?.id) { _, id in
-            isInspectorVisible = id != nil
+        .task(id: model.refreshInterval) {
+            guard model.refreshInterval > 0 else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(model.refreshInterval)) } catch { return }
+                if NSApplication.shared.isActive { await model.refreshAutomatically() }
+            }
+        }
+        .onChange(of: model.inspectorRevision) { _, _ in
+            isInspectorVisible = model.selectedJobDetail != nil
+        }
+        .onChange(of: model.selectedJobDetail == nil) { _, empty in
+            if empty { isInspectorVisible = false }
         }
     }
 
@@ -196,12 +206,7 @@ private struct WorkspaceViewRow: View {
                     .font(.callout.weight(.medium))
                     .foregroundStyle(isSelected ? .primary : .primary)
                     .lineLimit(1)
-                if view.isComingSoon {
-                    Text("Coming soon")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+
             }
 
             Spacer()

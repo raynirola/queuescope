@@ -2,27 +2,51 @@
 
 Native macOS SwiftUI dashboard for inspecting and operating BullMQ queues.
 
-QueueScope targets BullMQ `5.77.x` Redis layouts. It connects directly to Redis for dashboard reads, discovers BullMQ queues, shows queue health, pages jobs by state, opens job payloads/failures in an inspector, and routes job mutations through BullMQ's official Node package.
+QueueScope targets BullMQ `5.77.x` Redis layouts. It connects directly to Redis for dashboard reads, discovers BullMQ queues and loads saved queues, shows queue health, pages jobs by state, opens job payloads/failures in an inspector, and routes job mutations through BullMQ's official Node package.
 
 ## Current Features
 
 - Native SwiftUI three-pane macOS interface.
 - Redis URL connection with `redis://` and `rediss://` parsing.
-- Saved connection profiles in app preferences.
-- BullMQ queue discovery via `SCAN` against `<prefix>:*:meta`.
+- Saved connection profiles with credentials in macOS Keychain.
+- Queue discovery by prefix, plus manually added queues and saved display names/groups.
+- Exact job ID lookup and incremental name, failure-text, state, and creation-date filtering.
+- Configurable automatic refresh with last-updated, stale, and refresh-failure indicators.
+- Read-only connection profiles and queue pause/resume controls.
+- Parent/child flow graphs with cross-queue job inspection.
 - Queue counters for waiting, active, delayed, prioritized, completed, failed, paused, and waiting-children.
 - Runs table by state with job id, name, attempts, duration, and payload preview.
 - Job inspector for payload, options, progress, return value, failure reason, stack trace, and timestamps.
 - Job actions for retrying completed/failed jobs, promoting delayed jobs, removing non-active jobs, and duplicating jobs with editable data/options.
-- Local metric snapshots for queue trend charts without writing to Redis.
-- Worker and scheduler key discovery panels.
+- Local metric snapshots scoped to the Redis host, port, database, prefix, and queue, without writing to Redis.
+- Scheduler discovery and live named worker connections from Redis CLIENT LIST.
 - Sparkle-backed manual app update checks.
 
 ## Job Actions
 
-QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `BullMQActionBridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, and `Queue.add`.
+QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `BullMQActionBridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, `Queue.add`, `Queue.pause`, and `Queue.resume`.
 
 The Xcode build packages the bridge and its locked production dependencies into `QueueScope.app`, so people using the built app do not run `npm install`. The build machine needs npm available so the `Package BullMQ action bridge` build phase can install the locked bridge dependencies into the app bundle. The app runs the packaged bridge with Node from `BULLMQ_NODE_PATH`, Homebrew, `/usr/local`, `/usr/bin`, or nvm; set `BULLMQ_ACTION_BRIDGE_PATH` only when deliberately overriding the packaged bridge during development.
+
+Job actions have a 30-second deadline and support task cancellation. The app drains stdout and stderr while the bridge runs, with a 1 MiB limit per stream. If execution is interrupted, the action may already have reached Redis: refresh and inspect the job before retrying.
+
+## Browsing and Operations
+
+- **Discovery:** choose Discover queues in the sidebar. Scans use the connected prefix and preserve saved groups and display names. If more Redis keys remain, choose Scan more.
+- **Search:** open a job directly by ID, or combine name/failure-text filters with state selection and optional creation dates. Search reads up to 500 job entries per request; Search more continues from the previous position. Results are not a snapshot: jobs can move between states while you browse. Automatic refresh pauses during a filtered search so it does not discard your progress; Refresh reruns the search.
+- **Refresh:** choose Manual, 5, 15, 30, or 60 seconds. The interval is saved per connection. Polling runs only while the app is active and no other operation is in progress, and pauses after a refresh failure. The last successful refresh remains visible with a stale/error indicator.
+- **Read-only:** enable Read-only connection before connecting or saving a profile. The setting applies to the connected session; editing the form does not change its permissions. All mutations are rejected before launching the bridge, including bulk actions and queue pause/resume. This is an app safeguard; use Redis ACLs when server-enforced permissions are required.
+- **Pause/resume:** pausing stops new jobs from being claimed; currently active jobs may finish. Both operations require confirmation and use BullMQ itself.
+- **Workers:** lists actual named BullMQ worker connections in the selected Redis database. It requires CLIENT LIST permission and providers that support worker client names. Connection presence does not prove processing activity; worker concurrency or processed-job counts are not inferred.
+- **Flows:** enter a job ID in Flow graph or choose View parent and child jobs in the inspector. The graph includes ancestors and the selected job's descendants across queues. Select a node to inspect it. Each graph is limited to 80 jobs, eight ancestor levels, and six descendant levels, with a partial-graph notice when truncated. Open a descendant's flow to explore that branch. Jobs under another prefix can be inspected, but their mutations are disabled; connect to that prefix to operate on them.
+
+## Local Data
+
+Redis URLs are masked in the connection editor until explicitly revealed. Profile metadata is stored in preferences; complete connection URLs are stored in Keychain. Existing plaintext profiles migrate only after their Keychain writes succeed. A Keychain failure preserves the original data and reports an error.
+
+Metric history lives at `~/Library/Application Support/QueueScope/metrics-v2.json`. It retains up to 120 snapshots per connection/queue and caps the active file at 4 MiB. Only the newest snapshot per queue carries native metrics, limited to the latest 1,440 minute buckets supported by the charts. Old snapshots without a connection identity are archived alongside that file as `metrics-legacy-*.json`; they are not mixed into current charts.
+
+Switching connections disconnects the previous session before attempting the next one. Editing a profile's prefix does not change an already connected session. Connection switches are blocked while a job mutation is running.
 
 ## App Updates
 
@@ -56,9 +80,21 @@ Select the `BullMQDashboard` scheme and press Run. The app builds as QueueScope.
 
 ## Test
 
+Use Xcode with Swift 6 support and Node.js/npm. Install Redis locally to run transport and BullMQ integration tests. The tests start their own loopback Redis processes; they do not use saved connections. Swift transport tests are skipped if Redis is unavailable.
+
 ```sh
-xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard -configuration Debug build
+xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard -configuration Debug -destination 'platform=macOS' test
+npm ci --prefix BullMQActionBridge
+npm test --prefix BullMQActionBridge
 ```
+
+For a build without a developer signing identity (also used in CI):
+
+```sh
+xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard -configuration Debug -destination 'platform=macOS' DEVELOPMENT_TEAM='' CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test
+```
+
+Tests use isolated preferences, temporary metric files, and an in-memory credential store. The feature integration fixture creates jobs, workers in two databases, and cross-queue flows using the bundled BullMQ package, then exercises the Swift read engine and mutation bridge. The app host does not open the dashboard or restore a saved connection during XCTest. Set `REDIS_SERVER_PATH` or `BULLMQ_NODE_PATH` if the executables are outside the supported locations.
 
 ## Architecture
 

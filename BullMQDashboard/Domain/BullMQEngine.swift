@@ -3,6 +3,11 @@ import Foundation
 protocol BullMQEngine: Sendable {
     func connect(_ config: RedisConnectionConfig) async throws
     func disconnect() async
+    func discoverQueues(prefix: String, cursor: String) async throws -> QueueDiscovery
+    func findJob(queueName: String, prefix: String, jobID: String) async throws -> JobSummary?
+    func searchJobs(queueName: String, prefix: String, state: BullMQState?, filter: JobFilter, cursor: JobSearchCursor) async throws -> JobSearchResult
+    func getJobFlow(_ reference: JobReference) async throws -> JobFlow
+    func setQueuePaused(queueName: String, prefix: String, paused: Bool) async throws
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary
     func getJobs(queueName: String, prefix: String, state: BullMQState, page: Int, pageSize: Int) async throws -> JobPage
     func getRecentJobs(queueName: String, prefix: String, states: [BullMQState], perStateLimit: Int, totalLimit: Int) async throws -> [JobSummary]
@@ -23,6 +28,8 @@ enum BullMQDashboardError: LocalizedError, Equatable {
     case missingHost
     case unsupportedURLScheme(String)
     case redis(String)
+    case connectionLost(String)
+    case jobStateUnavailable(String)
     case notConnected
 
     var errorDescription: String? {
@@ -31,6 +38,8 @@ enum BullMQDashboardError: LocalizedError, Equatable {
         case .missingHost: "The Redis URL is missing a host."
         case .unsupportedURLScheme(let scheme): "Unsupported Redis URL scheme: \(scheme)."
         case .redis(let message): message
+        case .connectionLost(let message): "Redis disconnected: \(message)"
+        case .jobStateUnavailable(let id): "Job \(id) exists but its state is changing or unknown. Refresh to try again."
         case .notConnected: "Connect to Redis before loading queues."
         }
     }

@@ -3,9 +3,8 @@ import Foundation
 actor BullMQRedisEngine: BullMQEngine {
     private var redis: RedisRESPClient?
     private var config: RedisConnectionConfig?
+    private var connectionGeneration = UUID()
     private let mutationClient = BullMQMutationClient()
-    private let scanLimit = 2_000
-    private let scanPageLimit = 500
     private let jobSummaryFields = [
         "name",
         "timestamp",
@@ -19,16 +18,147 @@ actor BullMQRedisEngine: BullMQEngine {
     ]
 
     func connect(_ config: RedisConnectionConfig) async throws {
+        await disconnect()
+        let generation = connectionGeneration
         let client = RedisRESPClient()
         try await client.connect(config)
+        guard generation == connectionGeneration else { await client.disconnect(); throw CancellationError() }
         self.redis = client
         self.config = config
     }
 
     func disconnect() async {
-        await redis?.disconnect()
+        connectionGeneration = UUID()
+        let previous = redis
         redis = nil
         config = nil
+        await previous?.disconnect()
+    }
+
+    func discoverQueues(prefix: String, cursor: String = "0") async throws -> QueueDiscovery {
+        let escaped = prefix.map { "\\*?[]".contains($0) ? "\\\($0)" : String($0) }.joined()
+        let response = try await command(["SCAN", cursor, "MATCH", "\(escaped):*:meta", "COUNT", "500"])
+        guard case .array(let values?) = response, values.count == 2 else {
+            throw BullMQDashboardError.redis("Invalid queue discovery response.")
+        }
+        let names = arrayStrings(values[1]).compactMap { BullMQParsing.parseQueueName(fromMetaKey: $0, prefix: prefix) }
+        return QueueDiscovery(names: Array(Set(names)).sorted(), nextCursor: values[0].string ?? "0")
+    }
+
+    func setQueuePaused(queueName: String, prefix: String, paused: Bool) async throws {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        try await mutationClient.setQueuePaused(config: config, queueName: queueName, prefix: prefix, paused: paused)
+    }
+
+    func findJob(queueName: String, prefix: String, jobID: String) async throws -> JobSummary? {
+        let generation = connectionGeneration
+        let fields = try await hgetall(BullMQParsing.jobKey(prefix: prefix, queue: queueName, jobID: jobID))
+        guard generation == connectionGeneration else { throw CancellationError() }
+        guard !fields.isEmpty else { return nil }
+        let states = BullMQState.allCases
+        let responses = try await commands(states.map { state in
+            let key = stateKey(prefix: prefix, queueName: queueName, state: state)
+            return [.waiting, .active, .paused].contains(state) ? ["LPOS", key, jobID] : ["ZSCORE", key, jobID]
+        })
+        for (index, state) in states.enumerated() where responses[index].string != nil || responses[index].int != nil {
+            return makeJobSummary(queueName: queueName, state: state, id: jobID, fields: fields,
+                                  score: state == .delayed ? Double(responses[index].string ?? "") : nil)
+        }
+        throw BullMQDashboardError.jobStateUnavailable(jobID)
+    }
+
+    func searchJobs(queueName: String, prefix: String, state: BullMQState?, filter: JobFilter, cursor: JobSearchCursor) async throws -> JobSearchResult {
+        let generation = connectionGeneration
+        let states = state.map { [$0] } ?? BullMQState.allCases
+        var cursor = cursor
+        var matches: [JobSummary] = []
+        var scanned = 0
+        while cursor.stateIndex < states.count, scanned < 500, matches.count < 50 {
+            try Task.checkCancellation()
+            let state = states[cursor.stateIndex]
+            let key = stateKey(prefix: prefix, queueName: queueName, state: state)
+            let response = try await command(jobEntriesCommand(for: state, key: key, start: cursor.offset, stop: cursor.offset + 49))
+            guard generation == connectionGeneration else { throw CancellationError() }
+            let entries = jobEntries(for: state, response: response)
+            guard !entries.isEmpty else { cursor.stateIndex += 1; cursor.offset = 0; continue }
+            let jobs = try await jobSummaries(queueName: queueName, prefix: prefix, state: state, entries: entries)
+            guard generation == connectionGeneration else { throw CancellationError() }
+            matches.append(contentsOf: jobs.filter(filter.matches))
+            scanned += entries.count
+            cursor.offset += entries.count
+            if entries.count < 50 { cursor.stateIndex += 1; cursor.offset = 0 }
+        }
+        return JobSearchResult(jobs: matches, next: cursor.stateIndex < states.count ? cursor : nil, scanned: scanned)
+    }
+
+    func getJobFlow(_ reference: JobReference) async throws -> JobFlow {
+        let generation = connectionGeneration
+        var root = reference
+        var ancestors: [JobReference] = []
+        var seenAncestors: Set<String> = [reference.id]
+        var flow = JobFlow()
+        for _ in 0..<8 {
+            let fields = try await hgetall(root.id)
+            guard generation == connectionGeneration else { throw CancellationError() }
+            guard let key = fields["parentKey"], let parent = JobReference(key: key, preferredPrefix: root.prefix) else { break }
+            guard seenAncestors.insert(parent.id).inserted else { flow.truncated = true; break }
+            ancestors.append(parent)
+            root = parent
+        }
+        if ancestors.count == 8 { flow.truncated = true }
+        let chain = Array(ancestors.reversed())
+        for (depth, ref) in chain.enumerated() {
+            let fields = try await hgetall(ref.id)
+            guard generation == connectionGeneration else { throw CancellationError() }
+            let job: JobSummary?
+            do { job = try await findJob(queueName: ref.queue, prefix: ref.prefix, jobID: ref.jobID) }
+            catch BullMQDashboardError.jobStateUnavailable { job = nil }
+            guard generation == connectionGeneration else { throw CancellationError() }
+            flow.nodes.append(JobFlowNode(reference: ref, name: fields["name"] ?? "Missing job", state: job?.state, depth: depth))
+            flow.edges.append(JobFlowEdge(parent: ref.id, child: depth + 1 < chain.count ? chain[depth + 1].id : reference.id))
+        }
+        var pending: [(JobReference, Int)] = [(reference, chain.count)]
+        var seen = Set(chain.map(\.id))
+        while !pending.isEmpty, flow.nodes.count < 80 {
+            try Task.checkCancellation()
+            let (ref, depth) = pending.removeFirst()
+            guard seen.insert(ref.id).inserted else { continue }
+            let fields = try await hgetall(ref.id)
+            guard generation == connectionGeneration else { throw CancellationError() }
+            let job: JobSummary?
+            do { job = try await findJob(queueName: ref.queue, prefix: ref.prefix, jobID: ref.jobID) }
+            catch BullMQDashboardError.jobStateUnavailable { job = nil }
+            guard generation == connectionGeneration else { throw CancellationError() }
+            flow.nodes.append(JobFlowNode(reference: ref, name: fields["name"] ?? "Missing job", state: job?.state, depth: depth))
+            let responses = try await commands([
+                ["SSCAN", "\(ref.id):dependencies", "0", "COUNT", "80"],
+                ["HSCAN", "\(ref.id):processed", "0", "COUNT", "80"],
+                ["HSCAN", "\(ref.id):failed", "0", "COUNT", "80"],
+                ["ZRANGE", "\(ref.id):unsuccessful", "0", "80"]
+            ])
+            guard generation == connectionGeneration else { throw CancellationError() }
+            var keys: [String] = []
+            for index in 0..<3 {
+                if case .array(let values?) = responses[index], values.count == 2 {
+                    if values[0].string != "0" { flow.truncated = true }
+                    let entries = arrayStrings(values[1])
+                    keys += index == 0 ? entries : stride(from: 0, to: entries.count, by: 2).map { entries[$0] }
+                }
+            }
+            keys += arrayStrings(responses[3])
+            let unique = Array(Set(keys)).sorted()
+            if unique.count > 80 || (depth - chain.count >= 6 && !unique.isEmpty) { flow.truncated = true }
+            guard depth - chain.count < 6 else { continue }
+            for key in unique.prefix(80) {
+                guard let child = JobReference(key: key, preferredPrefix: ref.prefix) else { flow.truncated = true; continue }
+                flow.edges.append(JobFlowEdge(parent: ref.id, child: child.id))
+                if !seen.contains(child.id) { pending.append((child, depth + 1)) }
+            }
+        }
+        if !pending.isEmpty { flow.truncated = true }
+        let ids = Set(flow.nodes.map(\.id))
+        flow.edges = flow.edges.filter { ids.contains($0.parent) && ids.contains($0.child) }
+        return flow
     }
 
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary {
@@ -48,7 +178,8 @@ actor BullMQRedisEngine: BullMQEngine {
             ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "completed")],
             ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "failed")],
             ["LLEN", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "paused")],
-            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "waiting-children")]
+            ["ZCARD", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "waiting-children")],
+            ["HGET", BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "meta"), "paused"]
         ]
     }
 
@@ -63,12 +194,14 @@ actor BullMQRedisEngine: BullMQEngine {
             paused: responses[safe: 6]?.int ?? 0,
             waitingChildren: responses[safe: 7]?.int ?? 0
         )
-        return QueueSummary(
+        var summary = QueueSummary(
             name: queueName,
             prefix: prefix,
             counts: counts,
             health: BullMQParsing.health(from: counts)
         )
+        summary.isPaused = responses[safe: 8]?.string == "1"
+        return summary
     }
 
     func getJobs(queueName: String, prefix: String, state: BullMQState, page: Int, pageSize: Int) async throws -> JobPage {
@@ -196,9 +329,9 @@ actor BullMQRedisEngine: BullMQEngine {
         let failedKey = BullMQParsing.key(prefix: prefix, queue: queueName, suffix: "metrics:failed")
         let responses = try await commands([
             ["HMGET", completedKey, "count", "prevTS", "prevCount"],
-            ["LRANGE", "\(completedKey):data", "0", "-1"],
+            ["LRANGE", "\(completedKey):data", "0", "1439"],
             ["HMGET", failedKey, "count", "prevTS", "prevCount"],
-            ["LRANGE", "\(failedKey):data", "0", "-1"]
+            ["LRANGE", "\(failedKey):data", "0", "1439"]
         ])
         let completed = metricSeries(meta: responses[safe: 0] ?? .array([]), data: responses[safe: 1] ?? .array([]))
         let failed = metricSeries(meta: responses[safe: 2] ?? .array([]), data: responses[safe: 3] ?? .array([]))
@@ -222,57 +355,21 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {
-        let keys = try await scan(match: "\(prefix):\(queueName):*worker*", limit: 250, maxPages: scanPageLimit)
-        let sortedKeys = keys.sorted()
-        if sortedKeys.isEmpty {
-            return try await inferredWorkersFromActiveJobs(queueName: queueName, prefix: prefix)
+        let response = try await command(["CLIENT", "LIST"])
+        let clientName = "\(prefix):\(Data(queueName.utf8).base64EncodedString())"
+        return (response.string ?? "").split(separator: "\n").compactMap { line in
+            var fields: [String: String] = [:]
+            for pair in line.split(separator: " ") {
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                if parts.count == 2 { fields[String(parts[0])] = String(parts[1]) }
+            }
+            guard let name = fields["name"], name == clientName || name.hasPrefix(clientName + ":w:"),
+                  Int(fields["db"] ?? "") == (config?.database ?? 0) else { return nil }
+            fields["source"] = "client-list"
+            fields["status"] = "connected"
+            return WorkerSummary(id: fields["id"] ?? name, queueName: queueName,
+                                 name: name.hasPrefix(clientName + ":w:") ? String(name.dropFirst(clientName.count + 3)) : "Worker \(fields["id"] ?? "")", raw: fields)
         }
-
-        let responses = try await commands(sortedKeys.map { ["HGETALL", $0] })
-        var workers: [WorkerSummary] = []
-        for (index, key) in sortedKeys.enumerated() {
-            var fields = hgetallFields(responses[safe: index] ?? .array([]))
-            fields["key"] = key
-            workers.append(
-                WorkerSummary(
-                    id: key,
-                    queueName: queueName,
-                    name: fields["name"] ?? key.components(separatedBy: ":").last ?? key,
-                    raw: fields
-                )
-            )
-        }
-        return workers
-    }
-
-    private func inferredWorkersFromActiveJobs(queueName: String, prefix: String) async throws -> [WorkerSummary] {
-        let overview = try await getQueueOverview(queueName: queueName, prefix: prefix)
-        guard overview.counts.active > 0 else { return [] }
-
-        let activeJobs = try await getJobs(queueName: queueName, prefix: prefix, state: .active, page: 0, pageSize: 8).jobs
-        let activeJobSummary: String
-        if let firstJob = activeJobs.first {
-            let remainingCount = max(0, overview.counts.active - 1)
-            activeJobSummary = remainingCount == 0 ? firstJob.name : "\(firstJob.name) + \(remainingCount) more"
-        } else {
-            activeJobSummary = "\(overview.counts.active.formatted()) active jobs"
-        }
-
-        return [
-            WorkerSummary(
-                id: "\(prefix):\(queueName):active-processing",
-                queueName: queueName,
-                name: "Active processing",
-                raw: [
-                    "status": "processing",
-                    "activeJobName": activeJobSummary,
-                    "concurrency": String(overview.counts.active),
-                    "processed": String(overview.counts.completed),
-                    "failed": String(overview.counts.failed),
-                    "source": "active-list"
-                ]
-            )
-        ]
     }
 
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary] {
@@ -523,30 +620,6 @@ actor BullMQRedisEngine: BullMQEngine {
         job.finishedOn ?? job.processedOn ?? job.delayedUntil ?? job.timestamp ?? .distantPast
     }
 
-    private func scan(match: String, limit: Int, maxPages: Int? = nil, stopAfterFirstResultPage: Bool = false) async throws -> [String] {
-        var cursor = "0"
-        var keys: [String] = []
-        var pages = 0
-        repeat {
-            pages += 1
-            let response = try await command(["SCAN", cursor, "MATCH", match, "COUNT", "1000"])
-            guard case .array(let values?) = response, values.count == 2 else { break }
-            cursor = values[0].string ?? "0"
-            let pageKeys = arrayStrings(values[1])
-            keys.append(contentsOf: pageKeys)
-            if stopAfterFirstResultPage, !pageKeys.isEmpty {
-                return Array(keys.prefix(limit))
-            }
-            if keys.count >= limit {
-                return Array(keys.prefix(limit))
-            }
-            if let maxPages, pages >= maxPages {
-                break
-            }
-        } while cursor != "0"
-        return keys
-    }
-
     private func hgetall(_ key: String) async throws -> [String: String] {
         hgetallFields(try await command(["HGETALL", key]))
     }
@@ -571,13 +644,18 @@ actor BullMQRedisEngine: BullMQEngine {
     }
 
     private func command(_ parts: [String]) async throws -> RESPValue {
-        guard let redis else { throw BullMQDashboardError.notConnected }
-        return try await redis.command(parts)
+        try await commands([parts])[0]
     }
 
     private func commands(_ batch: [[String]]) async throws -> [RESPValue] {
-        guard let redis else { throw BullMQDashboardError.notConnected }
-        return try await redis.commands(batch)
+        guard let client = redis else { throw BullMQDashboardError.notConnected }
+        do { return try await client.commands(batch) }
+        catch {
+            if let failure = error as? BullMQDashboardError, case .connectionLost = failure, redis === client {
+                await disconnect()
+            }
+            throw error
+        }
     }
 
     private func arrayStrings(_ value: RESPValue) -> [String] {

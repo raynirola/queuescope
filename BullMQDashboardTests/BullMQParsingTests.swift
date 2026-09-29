@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import AppKit
 @testable import BullMQDashboard
 
 final class BullMQParsingTests: XCTestCase {
@@ -80,7 +82,7 @@ final class BullMQParsingTests: XCTestCase {
         XCTAssertEqual(TimeInterval(0.078).compactDurationDisplay, "78ms")
         XCTAssertEqual(TimeInterval(5.68).compactDurationDisplay, "5.7s")
         XCTAssertEqual(TimeInterval(45).compactDurationDisplay, "45s")
-        XCTAssertEqual(TimeInterval(95).compactDurationDisplay, "1.5m")
+        XCTAssertEqual(TimeInterval(95).compactDurationDisplay, "1.6m")
         XCTAssertEqual(TimeInterval(15_623.95).compactDurationDisplay, "4.3h")
         XCTAssertEqual(TimeInterval(172_800).compactDurationDisplay, "2d")
     }
@@ -114,15 +116,283 @@ final class BullMQParsingTests: XCTestCase {
 
 @MainActor
 final class AppModelRefreshTests: XCTestCase {
-    func testOverviewRefreshSkipsRunsWorkersAndSchedulers() async {
+    private func makeModel(engine: BullMQEngine) -> AppModel {
+        let suite = "QueueScopeTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return AppModel(
+            engine: engine,
+            profileStore: ConnectionProfileStore(defaults: defaults, credentials: MemoryConnectionCredentials()),
+            snapshotStore: MetricSnapshotStore(fileURL: directory.appendingPathComponent("metrics.json"), legacyDefaults: defaults),
+            queueNameStore: QueueNameStore(defaults: defaults),
+            queueMetadataStore: QueueMetadataStore(defaults: defaults),
+            workspacePreferenceStore: QueueWorkspacePreferenceStore(defaults: defaults)
+        )
+    }
+
+    func testReadOnlyConnectionBlocksEveryModelMutation() async {
         let engine = FakeBullMQEngine()
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
+        model.connectionReadOnly = true
+        await model.connect()
+        model.connectionReadOnly = false // Editing the form must not enable the live session.
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        let failed = makeJob(id: "failed", queueName: "email", state: .failed)
+        let delayed = makeJob(id: "delayed", queueName: "email", state: .delayed)
+        await model.retryJob(failed)
+        await model.removeJob(failed)
+        await model.promoteJob(delayed)
+        await model.retryJobs([failed])
+        await model.removeJobs([failed], removeChildren: true)
+        await model.promoteJobs([delayed])
+        let draft = JobDuplicateDraft(name: "job", dataJSON: "{}", optionsJSON: "{}")
+        await model.addJob(queueName: "email", draft: draft)
+        await model.duplicateJob(queueName: "email", draft: draft)
+        await model.setSelectedQueuePaused(true)
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertTrue(engine.retryCalls.isEmpty)
+        XCTAssertTrue(engine.removeCalls.isEmpty)
+        XCTAssertTrue(engine.promoteCalls.isEmpty)
+        XCTAssertTrue(engine.addCalls.isEmpty)
+        XCTAssertTrue(engine.duplicateCalls.isEmpty)
+        XCTAssertTrue(engine.pauseCalls.isEmpty)
+    }
+
+    func testDiscoveryMergesWithoutOverwritingQueueMetadata() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.queues = [QueueSummary(name: "email", displayName: "Custom", groupName: "Production", prefix: "bull", counts: .empty, health: .healthy)]
+        engine.discoveredNames = ["email", "other", "other"]
+        await model.discoverMoreQueues()
+        XCTAssertEqual(model.queues.map(\.name), ["email", "other"])
+        XCTAssertEqual(model.queues.first?.displayName, "Custom")
+        XCTAssertEqual(model.queues.first?.groupName, "Production")
+        XCTAssertTrue(model.hasDiscoveredQueues)
+    }
+
+    func testAutomaticRefreshHonorsDisabledBusyAndFailureStates() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        model.selectedView = .runs
+        model.refreshInterval = 0
+        await model.refreshAutomatically()
+        XCTAssertTrue(engine.overviewCalls.isEmpty)
+        model.refreshInterval = 15
+        model.activeLoadingPhases = [.runs]
+        await model.refreshAutomatically()
+        XCTAssertTrue(engine.overviewCalls.isEmpty)
+        model.activeLoadingPhases = []
+        await model.refreshAutomatically()
+        XCTAssertEqual(engine.overviewCalls.count, 1)
+        XCTAssertNotNil(model.lastRefreshedAt)
+        engine.overviewError = BullMQDashboardError.redis("offline")
+        await model.refreshAutomatically()
+        XCTAssertNotNil(model.lastRefreshError)
+        await model.refreshAutomatically()
+        XCTAssertEqual(engine.overviewCalls.count, 2)
+        engine.overviewError = nil
+        await model.refreshSelectedQueue()
+        XCTAssertNil(model.lastRefreshError)
+    }
+
+    func testTransportFailureMarksDisconnectedAndDisablesMutations() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        engine.overviewError = BullMQDashboardError.connectionLost("Socket closed")
+        await model.refreshSelectedQueue()
+        XCTAssertFalse(model.isConnected)
+        XCTAssertFalse(model.canWrite)
+        XCTAssertNotNil(model.lastRefreshError)
+    }
+
+    func testRefreshIntervalPersistsPerConnection() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.setRefreshInterval(30)
+        await model.connect()
+        XCTAssertEqual(model.refreshInterval, 30)
+        model.redisURL = "redis://other-host"
+        await model.connect()
+        XCTAssertEqual(model.refreshInterval, 15)
+    }
+
+    func testSearchContinuationKeepsMatchesAndPausesAutomaticRefresh() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        model.selectedView = .runs
+        model.jobFilter.name = "needle"
+        engine.searchResult = JobSearchResult(jobs: [], next: JobSearchCursor(stateIndex: 0, offset: 500), scanned: 500)
+        await model.applyJobSearch()
+        XCTAssertEqual(model.searchedJobCount, 500)
+        XCTAssertNotNil(model.searchCursor)
+        let calls = engine.overviewCalls.count
+        await model.refreshAutomatically()
+        XCTAssertEqual(engine.overviewCalls.count, calls)
+        engine.searchResult = JobSearchResult(jobs: [makeJob(id: "match", queueName: "email", state: .waiting)], next: nil, scanned: 120)
+        await model.loadMoreSearchResults()
+        XCTAssertEqual(model.jobs.map(\.id), ["match"])
+        XCTAssertEqual(model.searchedJobCount, 620)
+        XCTAssertNil(model.searchCursor)
+        model.jobFilter = JobFilter()
+        await model.applyJobSearch()
+        XCTAssertNil(model.appliedJobFilter)
+    }
+
+    func testCrossNamespaceFlowNavigationUsesTheReferencedQueue() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "parents", prefix: "bull", counts: .empty, health: .healthy)
+        engine.foundJob = makeJob(id: "child", queueName: "children", state: .waiting)
+        await model.inspectJob(JobReference(prefix: "other", queue: "children", jobID: "child"))
+        XCTAssertEqual(engine.lookupCalls.last?.prefix, "other")
+        XCTAssertEqual(engine.lookupCalls.last?.queue, "children")
+        XCTAssertEqual(model.selectedJobDetail?.queueName, "children")
+        XCTAssertFalse(model.canWrite)
+        await model.loadFlow()
+        XCTAssertEqual(engine.flowCalls.last?.prefix, "other")
+        XCTAssertEqual(engine.flowCalls.last?.jobID, "child")
+        XCTAssertEqual(model.selectedView, .flowGraph)
+    }
+
+    func testSupersededLookupCannotReplaceTheInspectorOrReportMissingJob() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        engine.lookupDelayByID["old"] = 100_000_000
+        engine.missingJobIDs = ["old"]
+        engine.foundJob = makeJob(id: "new", queueName: "email", state: .waiting)
+        let old = Task { await model.inspectJob(JobReference(prefix: "bull", queue: "email", jobID: "old")) }
+        try? await Task.sleep(for: .milliseconds(20))
+        await model.inspectJob(JobReference(prefix: "bull", queue: "email", jobID: "new"))
+        await old.value
+        XCTAssertEqual(model.selectedJobDetail?.id, "new")
+        XCTAssertNil(model.lastError)
+    }
+
+    func testInspectorIdentityDistinguishesEqualJobIDsAcrossQueues() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "parents", prefix: "bull", counts: .empty, health: .healthy)
+        engine.foundJob = makeJob(id: "1", queueName: "parents", state: .waitingChildren)
+        await model.inspectJob(JobReference(prefix: "bull", queue: "parents", jobID: "1"))
+        let previous = model.inspectorRevision
+        XCTAssertEqual(model.inspectedJobKey, "bull:parents:1")
+        engine.foundJob = makeJob(id: "1", queueName: "children", state: .waiting)
+        await model.inspectJob(JobReference(prefix: "bull", queue: "children", jobID: "1"))
+        XCTAssertEqual(model.inspectedJobKey, "bull:children:1")
+        XCTAssertGreaterThan(model.inspectorRevision, previous)
+    }
+
+    func testFeaturePanelsRender() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        model.connectionReadOnly = true
+        await model.connect()
+        var counts = QueueCounts.empty
+        counts.waiting = 24; counts.failed = 3; counts.completed = 150
+        model.selectedQueue = QueueSummary(name: "email", displayName: "Email delivery", prefix: "bull", counts: counts, health: .healthy)
+        model.jobs = [makeJob(id: "job-1", queueName: "email", state: .failed), makeJob(id: "job-2", queueName: "email", state: .waiting)]
+        model.runTotal = model.jobs.count
+        model.lastRefreshedAt = .now
+        for view in [QueueWorkspaceView.runs, .flowGraph] {
+            if view == .flowGraph {
+                let parent = JobReference(prefix: "bull", queue: "email", jobID: "parent")
+                let child = JobReference(prefix: "bull", queue: "attachments", jobID: "child")
+                engine.flowResult = JobFlow(nodes: [
+                    JobFlowNode(reference: parent, name: "Deliver email", state: .waitingChildren, depth: 0),
+                    JobFlowNode(reference: child, name: "Generate attachment", state: .active, depth: 1)
+                ], edges: [JobFlowEdge(parent: parent.id, child: child.id)])
+                model.flowJobID = "parent"
+                await model.loadFlow()
+            }
+            let host = NSHostingView(rootView: QueueDashboardView(selectedView: view).environmentObject(model))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 850), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .aqua)
+            window.contentView = host
+            host.frame = NSRect(x: 0, y: 0, width: 760, height: 850)
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(150))
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            window.orderOut(nil)
+            try png.write(to: URL(fileURLWithPath: "/tmp/queuescope-features-\(view.rawValue).png"))
+        }
+    }
+
+    func testFailedProfileSwitchDisconnectsOldSession() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        XCTAssertTrue(model.isConnected)
+        engine.connectShouldFail = true
+        await model.connect(profile: RedisConnectionProfile(name: "Unavailable", redisURL: "redis://unavailable:6379", prefix: "other"))
+        XCTAssertFalse(model.isConnected)
+        XCTAssertNil(engine.connectedConfig)
+        XCTAssertTrue(model.queues.isEmpty)
+    }
+
+    func testQueueLoadFromPreviousConnectionCannotPopulateNewSession() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        engine.overviewDelayByQueue["old"] = 100_000_000
+        let loading = Task { await model.addManualQueue(named: "old") }
+        try? await Task.sleep(for: .milliseconds(20))
+        await model.connect(profile: RedisConnectionProfile(name: "New", redisURL: "redis://new-host"))
+        await loading.value
+        XCTAssertTrue(model.queues.isEmpty)
+        XCTAssertNil(model.selectedQueue)
+    }
+
+    func testMissingCredentialsCannotConnectAsTheDefaultRedisUser() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        var profile = RedisConnectionProfile(name: "Missing", redisURL: "redis://localhost")
+        profile.credentialsInKeychain = true
+        await model.connect(profile: profile)
+        XCTAssertFalse(model.isConnected)
+        XCTAssertNil(engine.connectedConfig)
+        XCTAssertTrue(model.lastError?.contains("missing from Keychain") == true)
+    }
+
+    func testEditingPrefixDoesNotChangeActiveSession() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        model.prefix = "edited-but-not-connected"
+        model.redisURL = "redis://edited-host"
+        model.connectionProfileName = "Edited name"
+        XCTAssertEqual(model.activeConnection?.host, "127.0.0.1")
+        XCTAssertEqual(model.activeConnection?.name, "Local Redis")
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
+        await model.refreshSelectedQueue(for: .runs)
+        XCTAssertEqual(engine.overviewPrefixes.last, "bull")
+    }
+
+    func testOverviewRefreshLoadsTimingSamplesButSkipsWorkersAndSchedulers() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
 
         await model.refreshSelectedQueue(for: .overview)
 
         XCTAssertEqual(engine.overviewCalls, ["email"])
-        XCTAssertTrue(engine.recentJobsCalls.isEmpty)
+        XCTAssertEqual(engine.recentJobsCalls, ["email"])
         XCTAssertTrue(engine.workerCalls.isEmpty)
         XCTAssertTrue(engine.schedulerCalls.isEmpty)
     }
@@ -130,7 +400,7 @@ final class AppModelRefreshTests: XCTestCase {
     func testRunsRefreshLoadsOnlyOverviewAndRuns() async {
         let engine = FakeBullMQEngine()
         engine.recentJobs = [makeJob(id: "1", queueName: "email", state: .failed)]
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
 
         await model.refreshSelectedQueue(for: .runs)
@@ -148,7 +418,7 @@ final class AppModelRefreshTests: XCTestCase {
         engine.recentJobs = (1...21).map {
             makeJob(id: "\($0)", queueName: "email", state: .waiting)
         }
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
 
         await model.refreshSelectedQueue(for: .runs)
@@ -166,7 +436,7 @@ final class AppModelRefreshTests: XCTestCase {
     func testStaleRefreshCannotOverwriteNewerQueueSelection() async {
         let engine = FakeBullMQEngine()
         engine.overviewDelayByQueue["first"] = 120_000_000
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "first", prefix: "bull", counts: .empty, health: .unknown)
 
         let staleTask = Task {
@@ -182,7 +452,7 @@ final class AppModelRefreshTests: XCTestCase {
 
     func testManualQueueCanUseHumanReadableDisplayName() async {
         let engine = FakeBullMQEngine()
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.prefix = "bull"
 
         await model.addManualQueue(named: "bull:setup-inboxkit-mailbox-v2:meta", displayName: "Inbox setup")
@@ -193,7 +463,7 @@ final class AppModelRefreshTests: XCTestCase {
     }
 
     func testQueueCanBeAssignedToExplicitGroup() {
-        let model = AppModel(engine: FakeBullMQEngine())
+        let model = makeModel(engine: FakeBullMQEngine())
         let queue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.queues = [queue]
         model.selectedQueue = queue
@@ -208,7 +478,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         engine.jobDetails["1"] = makeJobDetail(id: "1", queueName: "email", state: .active)
         engine.jobLogLines["1"] = ["started"]
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
 
         model.selectJob(makeJob(id: "1", queueName: "email", state: .active))
         try? await Task.sleep(nanoseconds: 30_000_000)
@@ -223,7 +493,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         engine.jobDetails["1"] = makeJobDetail(id: "1", queueName: "email", state: .active)
         engine.jobLogLines["1"] = ["started"]
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
 
         model.selectJob(makeJob(id: "1", queueName: "email", state: .active))
         model.showSelectedJobLogs()
@@ -243,7 +513,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         engine.jobDetails["2"] = makeJobDetail(id: "2", queueName: "email", state: .completed)
         engine.jobLogLines["2"] = ["done"]
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
 
         model.selectJob(makeJob(id: "2", queueName: "email", state: .completed))
         model.showSelectedJobLogs()
@@ -258,7 +528,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         engine.jobDetails["3"] = makeJobDetail(id: "3", queueName: "email", state: .completed)
         engine.jobLogLines["3"] = (1...60).map { "line \($0)" }
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
 
         model.selectJob(makeJob(id: "3", queueName: "email", state: .completed))
         model.showSelectedJobLogs()
@@ -353,7 +623,7 @@ final class AppModelRefreshTests: XCTestCase {
         let job = makeJob(id: "1", queueName: "email", state: .failed)
         engine.recentJobs = [job]
         engine.jobDetails["1"] = makeJobDetail(id: "1", queueName: "email", state: .failed)
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
         model.selectedJob = job
@@ -372,7 +642,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         let job = makeJob(id: "2", queueName: "email", state: .failed)
         engine.recentJobs = []
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
         model.selectedJob = job
@@ -392,7 +662,7 @@ final class AppModelRefreshTests: XCTestCase {
         let job = makeJob(id: "3", queueName: "email", state: .delayed)
         engine.recentJobs = [job]
         engine.jobDetails["3"] = makeJobDetail(id: "3", queueName: "email", state: .delayed)
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
         model.selectedJob = job
@@ -409,7 +679,7 @@ final class AppModelRefreshTests: XCTestCase {
     func testDuplicateRefreshesRunsWithoutChangingSelection() async {
         let engine = FakeBullMQEngine()
         engine.duplicatedJobID = "4"
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
 
@@ -429,7 +699,7 @@ final class AppModelRefreshTests: XCTestCase {
     }
 
     func testRunSelectionCanToggleVisibleRuns() {
-        let model = AppModel(engine: FakeBullMQEngine())
+        let model = makeModel(engine: FakeBullMQEngine())
         let first = makeJob(id: "1", queueName: "email", state: .failed)
         let second = makeJob(id: "2", queueName: "email", state: .completed)
         model.jobs = [first, second]
@@ -453,7 +723,7 @@ final class AppModelRefreshTests: XCTestCase {
         let completed = makeJob(id: "2", queueName: "email", state: .completed)
         let waiting = makeJob(id: "3", queueName: "email", state: .waiting)
         engine.recentJobs = [waiting]
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
         model.jobs = [failed, completed, waiting]
@@ -470,7 +740,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         let delayed = makeJob(id: "1", queueName: "email", state: .delayed)
         let waiting = makeJob(id: "2", queueName: "email", state: .waiting)
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
 
@@ -486,7 +756,7 @@ final class AppModelRefreshTests: XCTestCase {
         let engine = FakeBullMQEngine()
         let failed = makeJob(id: "1", queueName: "email", state: .failed)
         let active = makeJob(id: "2", queueName: "email", state: .active)
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
         model.jobs = [failed, active]
@@ -507,7 +777,7 @@ final class AppModelRefreshTests: XCTestCase {
     func testAddJobRefreshesRuns() async {
         let engine = FakeBullMQEngine()
         engine.addedJobID = "new"
-        let model = AppModel(engine: engine)
+        let model = makeModel(engine: engine)
         model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .unknown)
         model.selectedView = .runs
 
@@ -583,12 +853,40 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     var addCalls: [(name: String, data: AnySendableJSON, options: AnySendableJSON)] = []
     var addedJobID = "added"
 
-    func connect(_ config: RedisConnectionConfig) async throws {}
+    var foundJob: JobSummary?
+    var lookupDelayByID: [String: UInt64] = [:]
+    var missingJobIDs: Set<String> = []
+    var lookupCalls: [(prefix: String, queue: String, id: String)] = []
+    var flowCalls: [JobReference] = []
+    var flowResult = JobFlow()
+    var overviewError: Error?
+    var discoveredNames: [String] = []
+    var searchResult = JobSearchResult(jobs: [], next: nil, scanned: 0)
+    var pauseCalls: [Bool] = []
+    func discoverQueues(prefix: String, cursor: String) async throws -> QueueDiscovery { QueueDiscovery(names: discoveredNames, nextCursor: "0") }
+    func findJob(queueName: String, prefix: String, jobID: String) async throws -> JobSummary? {
+        lookupCalls.append((prefix, queueName, jobID))
+        if let delay = lookupDelayByID[jobID] { try? await Task.sleep(nanoseconds: delay) }
+        return missingJobIDs.contains(jobID) ? nil : foundJob
+    }
+    func searchJobs(queueName: String, prefix: String, state: BullMQState?, filter: JobFilter, cursor: JobSearchCursor) async throws -> JobSearchResult { searchResult }
+    func getJobFlow(_ reference: JobReference) async throws -> JobFlow { flowCalls.append(reference); return flowResult }
+    func setQueuePaused(queueName: String, prefix: String, paused: Bool) async throws { pauseCalls.append(paused) }
+    var connectShouldFail = false
+    var connectedConfig: RedisConnectionConfig?
+    var overviewPrefixes: [String] = []
 
-    func disconnect() async {}
+    func connect(_ config: RedisConnectionConfig) async throws {
+        if connectShouldFail { throw BullMQDashboardError.redis("Connection refused") }
+        connectedConfig = config
+    }
+
+    func disconnect() async { connectedConfig = nil }
 
     func getQueueOverview(queueName: String, prefix: String) async throws -> QueueSummary {
         overviewCalls.append(queueName)
+        overviewPrefixes.append(prefix)
+        if let overviewError { throw overviewError }
         if let delay = overviewDelayByQueue[queueName] {
             try? await Task.sleep(nanoseconds: delay)
         }

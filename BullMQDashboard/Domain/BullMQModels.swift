@@ -39,13 +39,16 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
     var name: String
     var tag: String
     var redisURL: String
+    var isReadOnly = false
+    var credentialsInKeychain = false
     var prefix: String
 
     var displayURL: String {
         RedisURLParser.redacted(redisURL)
     }
 
-    init(id: UUID = UUID(), name: String, tag: String = "local", redisURL: String, prefix: String = "bull") {
+    init(id: UUID = UUID(), name: String, tag: String = "local", redisURL: String, prefix: String = "bull", isReadOnly: Bool = false) {
+        self.isReadOnly = isReadOnly
         self.id = id
         self.name = name
         self.tag = tag
@@ -57,7 +60,9 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        isReadOnly = try container.decodeIfPresent(Bool.self, forKey: .isReadOnly) ?? false
         tag = try container.decodeIfPresent(String.self, forKey: .tag) ?? "local"
+        credentialsInKeychain = try container.decodeIfPresent(Bool.self, forKey: .credentialsInKeychain) ?? false
         redisURL = try container.decodeIfPresent(String.self, forKey: .redisURL)
             ?? container.decode(String.self, forKey: .urlWithoutSecret)
         prefix = try container.decode(String.self, forKey: .prefix)
@@ -65,10 +70,15 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isReadOnly, forKey: .isReadOnly)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
         try container.encode(tag, forKey: .tag)
-        try container.encode(redisURL, forKey: .redisURL)
+        guard var url = URLComponents(string: redisURL) else { throw BullMQDashboardError.invalidRedisURL }
+        url.user = nil
+        url.password = nil
+        try container.encode(url.string, forKey: .urlWithoutSecret)
+        try container.encode(true, forKey: .credentialsInKeychain)
         try container.encode(prefix, forKey: .prefix)
     }
 
@@ -78,11 +88,14 @@ struct RedisConnectionProfile: Identifiable, Codable, Equatable, Sendable {
         case tag
         case redisURL
         case urlWithoutSecret
+        case isReadOnly
+        case credentialsInKeychain
         case prefix
     }
 }
 
 struct RedisConnectionConfig: Equatable, Sendable {
+    var isReadOnly = false
     var profileID: UUID?
     var name: String
     var host: String
@@ -101,6 +114,7 @@ struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
     var groupName: String?
     var prefix: String
     var counts: QueueCounts
+    var isPaused = false
     var health: QueueHealth
 
     var resolvedDisplayName: String {
@@ -129,6 +143,7 @@ struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
         groupName = try container.decodeIfPresent(String.self, forKey: .groupName)
         prefix = try container.decode(String.self, forKey: .prefix)
         counts = try container.decode(QueueCounts.self, forKey: .counts)
+        isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
         health = try container.decode(QueueHealth.self, forKey: .health)
     }
 }
@@ -241,6 +256,7 @@ struct JobLogEntry: Identifiable, Equatable, Sendable {
 
 struct QueueMetricSnapshot: Identifiable, Equatable, Codable, Sendable {
     var id = UUID()
+    var connectionScope: String? = nil
     var queueName: String
     var capturedAt: Date
     var counts: QueueCountsSnapshot
@@ -334,4 +350,73 @@ struct JobPage: Equatable, Sendable {
     var total: Int
     var page: Int
     var pageSize: Int
+}
+
+struct JobFilter: Equatable, Sendable {
+    var name = ""
+    var error = ""
+    var createdAfter: Date?
+    var createdBefore: Date?
+    var isEmpty: Bool { name.isEmpty && error.isEmpty && createdAfter == nil && createdBefore == nil }
+    func matches(_ job: JobSummary) -> Bool {
+        if !name.isEmpty && !job.name.localizedCaseInsensitiveContains(name) { return false }
+        if !error.isEmpty && !(job.failedReason?.localizedCaseInsensitiveContains(error) ?? false) { return false }
+        if let createdAfter, (job.timestamp ?? .distantPast) < createdAfter { return false }
+        if let createdBefore, (job.timestamp ?? .distantFuture) > createdBefore { return false }
+        return true
+    }
+}
+
+struct JobSearchCursor: Equatable, Sendable {
+    var stateIndex = 0
+    var offset = 0
+}
+
+struct JobSearchResult: Sendable {
+    var jobs: [JobSummary]
+    var next: JobSearchCursor?
+    var scanned: Int
+}
+
+struct QueueDiscovery: Sendable {
+    var names: [String]
+    var nextCursor: String
+}
+
+struct JobReference: Hashable, Identifiable, Sendable {
+    var prefix: String
+    var queue: String
+    var jobID: String
+    var id: String { "\(prefix):\(queue):\(jobID)" }
+    init(prefix: String, queue: String, jobID: String) {
+        self.prefix = prefix; self.queue = queue; self.jobID = jobID
+    }
+    init?(key: String, preferredPrefix: String) {
+        let known = key.hasPrefix(preferredPrefix + ":")
+        let parts = (known ? String(key.dropFirst(preferredPrefix.count + 1)) : key).split(separator: ":", maxSplits: known ? 1 : 2, omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == (known ? 2 : 3), parts.allSatisfy({ !$0.isEmpty }) else { return nil }
+        prefix = known ? preferredPrefix : parts[0]
+        queue = parts[known ? 0 : 1]
+        jobID = parts[known ? 1 : 2]
+    }
+}
+
+struct JobFlowNode: Identifiable, Sendable {
+    var reference: JobReference
+    var name: String
+    var state: BullMQState?
+    var depth: Int
+    var id: String { reference.id }
+}
+
+struct JobFlowEdge: Identifiable, Sendable {
+    var parent: String
+    var child: String
+    var id: String { parent + "→" + child }
+}
+
+struct JobFlow: Sendable {
+    var nodes: [JobFlowNode] = []
+    var edges: [JobFlowEdge] = []
+    var truncated = false
 }
