@@ -334,6 +334,51 @@ final class AppModelRefreshTests: XCTestCase {
         }
     }
 
+    func testCompleteWindowLayoutsRender() async throws {
+        let model = makeModel(engine: FakeBullMQEngine())
+        await model.connect()
+        var counts = QueueCounts.empty
+        counts.waiting = 24; counts.failed = 1000; counts.completed = 150
+        let queue = QueueSummary(name: "campaign-stats-child", displayName: "Campaign Stats Child", prefix: "bull", counts: counts, health: .healthy)
+        model.selectedQueue = queue
+        model.queues = [queue]
+        model.jobs = [makeJob(id: "job-1", queueName: queue.name, state: .failed)]
+        model.runTotal = 1
+        model.jobFilter.createdAfter = .now.addingTimeInterval(-86400)
+        model.jobFilter.createdBefore = .now
+        model.snapshots = [QueueMetricSnapshot(queueName: queue.name, capturedAt: .now,
+            counts: QueueCountsSnapshot(waiting: 24, active: 0, delayed: 0, prioritized: 0, completed: 150, failed: 1000, paused: 0, waitingChildren: 0),
+            nativeMetrics: BullMQNativeMetrics(
+                completed: BullMQMetricSeries(count: 4_700_000, previousTimestamp: .now, previousCount: 0, data: Array(repeating: 27, count: 1440)),
+                failed: BullMQMetricSeries(count: 328_000, previousTimestamp: .now, previousCount: 0, data: Array(repeating: 7, count: 1440))))]
+        model.profiles = [RedisConnectionProfile(name: "Local Redis", redisURL: "redis://127.0.0.1:6379", prefix: "bull")]
+        model.lastRefreshedAt = .now
+        for width in [1120, 1400] {
+            for view in QueueWorkspaceView.allCases {
+                model.selectedView = view
+                try await renderLayout(AnyView(DashboardRootView().environmentObject(model)), width: width, height: 850, name: "window-\(width)-\(view.rawValue)")
+            }
+        }
+        try await renderLayout(AnyView(ConnectionManagerView().environmentObject(model)), width: 695, height: 520, name: "connection")
+    }
+
+    private func renderLayout(_ view: AnyView, width: Int, height: Int, name: String) async throws {
+        let rect = NSRect(x: 0, y: 0, width: width, height: height)
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        host.frame = rect
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        window.orderOut(nil)
+        try png.write(to: URL(fileURLWithPath: "/tmp/queuescope-layout-\(name).png"))
+    }
+
     func testFailedProfileSwitchDisconnectsOldSession() async {
         let engine = FakeBullMQEngine()
         let model = makeModel(engine: engine)

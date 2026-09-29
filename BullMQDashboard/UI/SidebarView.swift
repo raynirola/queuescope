@@ -538,7 +538,7 @@ struct ConnectionManagerView: View {
                         Text(tag.titleCasedQueueName).tag(tag)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .labelsHidden()
             }
 
