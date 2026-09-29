@@ -48,7 +48,7 @@ struct QueueDashboardView: View {
                         QueueRefreshControls()
                         content(for: queue)
                     }
-                    .padding(.horizontal, 26)
+                    .padding(.horizontal, 24)
                     .padding(.vertical, 24)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
@@ -126,7 +126,7 @@ struct QueueDashboardView: View {
                     .font(.system(size: 28, weight: .semibold, design: .default))
                     .tracking(-0.2)
                     .lineLimit(1)
-                Text("\(queue.resolvedDisplayName) · \(queue.prefix):\(queue.name) · \(queue.health.label)")
+                Text("\(queue.resolvedDisplayName) · \(queue.prefix):\(queue.name)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -324,7 +324,7 @@ private struct MetricsPanel: View {
         let timing = MetricTimingSummary(jobs: model.metricTimingJobs, timeframe: throughputTimeframe)
 
         if style == .detailed {
-            VStack(alignment: .leading, spacing: 34) {
+            VStack(alignment: .leading, spacing: 24) {
                 MetricSettingsSection(
                     title: "Queue pressure",
                     subtitle: "Live queue shape and retry signals",
@@ -422,7 +422,7 @@ private struct MetricsPanel: View {
                                 timeframe: $throughputTimeframe,
                                 compact: false
                             )
-                                .padding(14)
+                                .padding(16)
                         }
                     } else {
                         SectionEmptyState(
@@ -430,7 +430,7 @@ private struct MetricsPanel: View {
                             message: "Worker metrics are not enabled for this queue."
                         )
                         .frame(minHeight: 120, alignment: .topLeading)
-                        .padding(14)
+                        .padding(16)
                     }
                 }
             }
@@ -1089,11 +1089,7 @@ private struct ThroughputMetricTooltip: View {
         .font(.caption2.monospacedDigit())
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.96), in: RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(Color.primary.opacity(0.055))
-        }
+        .dashboardSurface()
     }
 }
 
@@ -1199,12 +1195,8 @@ private struct MetricOverviewCard<Content: View>: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(14)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(0.055))
-            }
+            .padding(16)
+            .dashboardSurface()
     }
 }
 
@@ -1226,13 +1218,13 @@ private struct MetricSettingsSection<Content: View>: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(tint)
                 }
-                .frame(width: 38, height: 38)
+                .frame(width: 32, height: 32)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.headline.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                     Text(subtitle)
-                        .font(.callout)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -1247,11 +1239,7 @@ private struct MetricSettingsSection<Content: View>: View {
             }
 
             content
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.94), in: RoundedRectangle(cornerRadius: 11))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 11)
-                        .strokeBorder(Color.primary.opacity(0.08))
-                }
+                .dashboardSurface()
         }
         .padding(.bottom, 2)
     }
@@ -1335,7 +1323,10 @@ private struct StateMixBar: View {
     }
 
     private func segmentWidth(_ segment: StateMixSegment, in width: CGFloat) -> CGFloat {
-        max(6, width * CGFloat(segment.value) / CGFloat(total))
+        let available = max(0, width - CGFloat(nonEmptySegments.count - 1) * 2)
+        let weights = nonEmptySegments.map { max(6, available * CGFloat($0.value) / CGFloat(total)) }
+        let weight = max(6, available * CGFloat(segment.value) / CGFloat(total))
+        return available * weight / weights.reduce(0, +)
     }
 
     private func color(for state: BullMQState) -> Color {
@@ -1552,7 +1543,7 @@ private struct WorkerDetailSection: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(worker.name.titleCasedQueueName)
-                    .font(.headline.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
 
                 Text(statusText)
@@ -1565,24 +1556,20 @@ private struct WorkerDetailSection: View {
             }
 
             VStack(spacing: 0) {
-                WorkerDetailRow(icon: statusIcon, tint: statusColor, label: "Status", value: statusText)
+                QueueDetailRow(icon: statusIcon, tint: statusColor, label: "Status", value: statusText)
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "network", tint: .blue, label: "Address", value: worker.raw["addr"] ?? "Unknown")
+                QueueDetailRow(icon: "network", tint: .blue, label: "Address", value: worker.raw["addr"] ?? "Unknown")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "clock", tint: .green, label: "Connection age", value: "\(worker.raw["age"] ?? "?") seconds")
+                QueueDetailRow(icon: "clock", tint: .green, label: "Connection age", value: "\(worker.raw["age"] ?? "?") seconds")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "pause", tint: .gray, label: "Connection idle", value: "\(worker.raw["idle"] ?? "?") seconds")
+                QueueDetailRow(icon: "pause", tint: .gray, label: "Connection idle", value: "\(worker.raw["idle"] ?? "?") seconds")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "terminal", tint: .blue, label: "Last Redis command", value: worker.raw["cmd"] ?? "Unknown")
+                QueueDetailRow(icon: "terminal", tint: .blue, label: "Last Redis command", value: worker.raw["cmd"] ?? "Unknown")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "number", tint: .gray, label: "Worker id", value: worker.id, isMonospaced: true)
+                QueueDetailRow(icon: "number", tint: .gray, label: "Worker id", value: worker.id, isMonospaced: true)
             }
             .padding(.vertical, 6)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.06))
-            }
+            .dashboardSurface()
         }
     }
 
@@ -1612,42 +1599,6 @@ private struct WorkerDetailSection: View {
     }
 
 
-}
-
-private struct WorkerDetailRow: View {
-    let icon: String
-    let tint: Color
-    let label: String
-    let value: String
-    var isMonospaced = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(tint.opacity(0.14))
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
-            .frame(width: 32, height: 32)
-
-            Text(label)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(width: 118, alignment: .leading)
-
-            Text(value)
-                .font(isMonospaced ? .callout.monospaced() : .callout)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-    }
 }
 
 private struct FailedTriagePanel: View {
@@ -2143,7 +2094,7 @@ private struct SchedulerDetailSection: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(schedule.title)
-                    .font(.headline.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
 
                 Text(schedule.cadence)
@@ -2155,26 +2106,22 @@ private struct SchedulerDetailSection: View {
             }
 
             VStack(spacing: 0) {
-                SchedulerDetailRow(icon: icon, tint: tint, label: "Next run", value: nextRunText)
+                QueueDetailRow(icon: icon, tint: tint, label: "Next run", value: nextRunText)
                 Divider().padding(.leading, 56)
-                SchedulerDetailRow(icon: "arrow.triangle.2.circlepath", tint: tint, label: "Repeat", value: schedule.repeatDescription)
+                QueueDetailRow(icon: "arrow.triangle.2.circlepath", tint: tint, label: "Repeat", value: schedule.repeatDescription)
                 if let repeatOptions = schedule.repeatOptions {
                     Divider().padding(.leading, 56)
-                    SchedulerDetailRow(icon: "slider.horizontal.3", tint: .gray, label: "Options", value: repeatOptions)
+                    QueueDetailRow(icon: "slider.horizontal.3", tint: .gray, label: "Options", value: repeatOptions)
                 }
                 Divider().padding(.leading, 56)
-                SchedulerDetailRow(icon: "number", tint: .gray, label: "Job key", value: schedule.rawTitle, isMonospaced: true)
+                QueueDetailRow(icon: "number", tint: .gray, label: "Job key", value: schedule.rawTitle, isMonospaced: true)
                 Divider().padding(.leading, 56)
-                SchedulerDetailRow(icon: "clock", tint: .gray, label: "Next timestamp", value: nextTimestampText)
+                QueueDetailRow(icon: "clock", tint: .gray, label: "Next timestamp", value: nextTimestampText)
                 Divider().padding(.leading, 56)
-                SchedulerDetailRow(icon: "key.horizontal", tint: .gray, label: "Redis key", value: schedule.rawKey, isMonospaced: true)
+                QueueDetailRow(icon: "key.horizontal", tint: .gray, label: "Redis key", value: schedule.rawKey, isMonospaced: true)
             }
             .padding(.vertical, 6)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.06))
-            }
+            .dashboardSurface()
         }
     }
 
@@ -2206,7 +2153,7 @@ private struct SchedulerDetailSection: View {
     }
 }
 
-private struct SchedulerDetailRow: View {
+private struct QueueDetailRow: View {
     let icon: String
     let tint: Color
     let label: String
@@ -2234,6 +2181,7 @@ private struct SchedulerDetailRow: View {
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .lineLimit(isMonospaced ? 1 : 2)
+                .help(value)
 
             Spacer(minLength: 0)
         }
@@ -2350,12 +2298,8 @@ private extension View {
     func panelStyle(minHeight: CGFloat = 168) -> some View {
         self
             .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
-            .padding(14)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(0.055))
-            }
+            .padding(16)
+            .dashboardSurface()
     }
 }
 

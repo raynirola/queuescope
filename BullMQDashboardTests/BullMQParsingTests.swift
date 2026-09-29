@@ -335,14 +335,22 @@ final class AppModelRefreshTests: XCTestCase {
     }
 
     func testCompleteWindowLayoutsRender() async throws {
-        let model = makeModel(engine: FakeBullMQEngine())
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
         await model.connect()
         var counts = QueueCounts.empty
-        counts.waiting = 24; counts.failed = 1000; counts.completed = 150
+        counts.waiting = 24; counts.active = 12; counts.failed = 1000; counts.completed = 150
         let queue = QueueSummary(name: "campaign-stats-child", displayName: "Campaign Stats Child", prefix: "bull", counts: counts, health: .healthy)
         model.selectedQueue = queue
         model.queues = [queue]
         model.jobs = [makeJob(id: "job-1", queueName: queue.name, state: .failed)]
+        model.workers = [WorkerSummary(id: "42", queueName: queue.name, name: "campaign-worker", raw: ["status": "connected", "addr": "127.0.0.1:54321", "age": "3600", "idle": "2", "cmd": "bzpopmin"])]
+        model.schedulers = [SchedulerSummary(id: "daily-report", queueName: queue.name, name: "Daily report", nextRun: .now.addingTimeInterval(3600), raw: ["pattern": "0 9 * * *", "tz": "UTC"])]
+        let parent = JobReference(prefix: "bull", queue: queue.name, jobID: "parent")
+        let child = JobReference(prefix: "bull", queue: "attachments", jobID: "child")
+        engine.flowResult = JobFlow(nodes: [JobFlowNode(reference: parent, name: "Prepare report", state: .waitingChildren, depth: 0), JobFlowNode(reference: child, name: "Create attachment", state: .active, depth: 1)], edges: [JobFlowEdge(parent: parent.id, child: child.id)])
+        model.flowJobID = "parent"
+        await model.loadFlow()
         model.runTotal = 1
         model.jobFilter.createdAfter = .now.addingTimeInterval(-86400)
         model.jobFilter.createdBefore = .now
@@ -353,20 +361,43 @@ final class AppModelRefreshTests: XCTestCase {
                 failed: BullMQMetricSeries(count: 328_000, previousTimestamp: .now, previousCount: 0, data: Array(repeating: 7, count: 1440))))]
         model.profiles = [RedisConnectionProfile(name: "Local Redis", redisURL: "redis://127.0.0.1:6379", prefix: "bull")]
         model.lastRefreshedAt = .now
-        for width in [1120, 1400] {
-            for view in QueueWorkspaceView.allCases {
-                model.selectedView = view
-                try await renderLayout(AnyView(DashboardRootView().environmentObject(model)), width: width, height: 850, name: "window-\(width)-\(view.rawValue)")
+        for dark in [false, true] {
+            let theme = dark ? "dark" : "light"
+            for width in [1120, 1400] {
+                for view in QueueWorkspaceView.allCases {
+                    model.selectedView = view
+                    try await renderLayout(AnyView(DashboardRootView().environmentObject(model)), width: width, height: 850, name: "\(theme)-window-\(width)-\(view.rawValue)", dark: dark)
+                }
             }
+            try await renderLayout(AnyView(ConnectionManagerView().environmentObject(model)), width: 695, height: 520, name: "\(theme)-connection", dark: dark)
+            try await renderLayout(AnyView(ManualQueuePopover(queueName: .constant("report-jobs"), displayName: .constant("Report jobs"), prefix: "bull", addQueue: {})), width: 337, height: 310, name: "\(theme)-add-queue", dark: dark)
+            try await renderLayout(AnyView(QueueGroupPopover(queue: queue, groupName: .constant("Reporting"), existingGroups: ["Reporting", "Notifications"], save: { _ in }, clear: {})), width: 337, height: 300, name: "\(theme)-move-queue", dark: dark)
+            try await renderLayout(AnyView(QueueGroupManagementPopover(queues: [queue], existingGroups: ["Reporting", "Notifications"], createGroup: { _, _ in }, ungroupQueues: { _ in })), width: 362, height: 440, name: "\(theme)-groups", dark: dark)
+            let draft = JobDuplicateDraft(name: "Generate report", dataJSON: "{\"reportId\": \"report-42\"}", optionsJSON: "{\"attempts\": 3}")
+            try await renderLayout(AnyView(JobDraftSheet(title: "Add job", message: "Add a job to Campaign Stats Child.", submitTitle: "Add", draft: .constant(draft), isSubmitting: false, submit: {}, cancel: {})), width: 680, height: 620, name: "\(theme)-job-form", dark: dark)
+            model.selectedJob = model.jobs.first
+            var detail = makeJobDetail(id: "job-1", queueName: queue.name, state: .failed)
+            detail.data = .json("{\"reportId\": \"report-42\", \"status\": \"pending\"}")
+            detail.options = .json("{\"attempts\": 3}")
+            detail.failedReason = "The report service did not respond before the timeout."
+            detail.stacktrace = ["Error: request timed out\n    at processReport (worker.js:42:10)"]
+            model.selectedJobDetail = detail
+            try await renderLayout(AnyView(JobInspectorView().environmentObject(model)), width: 500, height: 850, name: "\(theme)-inspector", dark: dark)
+            model.selectedJobDetail = nil
         }
-        try await renderLayout(AnyView(ConnectionManagerView().environmentObject(model)), width: 695, height: 520, name: "connection")
     }
 
-    private func renderLayout(_ view: AnyView, width: Int, height: Int, name: String) async throws {
+    private func renderLayout(_ view: AnyView, width: Int, height: Int, name: String, dark: Bool = false) async throws {
         let rect = NSRect(x: 0, y: 0, width: width, height: height)
-        let host = NSHostingView(rootView: view)
+        let host = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
+        // The harness supplies an exact viewport; do not resize it to content.
+        host.sizingOptions = []
         let window = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: .aqua)
+        defer {
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         host.frame = rect
         host.layoutSubtreeIfNeeded()
@@ -375,6 +406,10 @@ final class AppModelRefreshTests: XCTestCase {
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
         window.orderOut(nil)
         try png.write(to: URL(fileURLWithPath: "/tmp/queuescope-layout-\(name).png"))
     }

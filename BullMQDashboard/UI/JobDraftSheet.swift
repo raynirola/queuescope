@@ -19,35 +19,35 @@ struct JobDraftSheet: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
+            .padding(16)
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Name")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    TextField("Job name", text: $draft.name)
-                        .textFieldStyle(.roundedBorder)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Name")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("Job name", text: $draft.name)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    JobJSONEditor(title: "Data", text: $draft.dataJSON)
+                        .frame(height: 170)
+
+                    JobJSONEditor(title: "Options", text: $draft.optionsJSON)
+                        .frame(height: 170)
+
+                    if let validationMessage {
+                        Text(validationMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-
-                JobJSONEditor(title: "Data", text: $draft.dataJSON)
-                    .frame(minHeight: 190)
-
-                JobJSONEditor(title: "Options", text: $draft.optionsJSON)
-                    .frame(minHeight: 190)
-
-                if let validationMessage {
-                    Text(validationMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .padding(16)
             }
-            .padding(18)
-
-            Spacer(minLength: 0)
             Divider()
 
             HStack {
@@ -64,10 +64,11 @@ struct JobDraftSheet: View {
                         Text(submitTitle)
                     }
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(validationMessage != nil || isSubmitting)
             }
-            .padding(18)
+            .padding(16)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }

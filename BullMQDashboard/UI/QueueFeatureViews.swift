@@ -102,6 +102,8 @@ struct JobSearchControls: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
+        .padding(16)
+        .dashboardSurface()
         .textFieldStyle(.roundedBorder)
         .controlSize(.small)
         .onAppear {
