@@ -13,6 +13,8 @@ struct JobInspectorView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 14) {
                         actionHeader(detail)
+                        Button("View parent and child jobs") { Task { await model.loadFlow() } }
+                            .buttonStyle(.link)
                         detailRows(detail)
                         DisplaySection(title: "Payload", value: detail.data)
                         DisplaySection(title: "Options", value: detail.options)
@@ -23,15 +25,15 @@ struct JobInspectorView: View {
                         }
                         if !detail.stacktrace.isEmpty {
                             StackTraceSection(stacktrace: detail.stacktrace)
-                                .id(detail.id)
+                                .id(model.inspectedJobKey)
                         }
                         LogsPanel()
-                            .id(detail.id)
+                            .id(model.inspectedJobKey)
                     }
                     .padding(18)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
-                .onChange(of: detail.id) { _, _ in
+                .onChange(of: model.inspectedJobKey) { _, _ in
                     model.stopSelectedJobLogStreaming()
                 }
                 .alert("Remove job?", isPresented: $isRemoveConfirmationPresented) {
@@ -118,7 +120,7 @@ struct JobInspectorView: View {
             }
             .menuStyle(.button)
             .controlSize(.small)
-            .disabled(model.activeJobAction != nil)
+            .disabled(model.activeJobAction != nil || !model.canWrite)
             .help("Job actions")
         }
         .padding(12)

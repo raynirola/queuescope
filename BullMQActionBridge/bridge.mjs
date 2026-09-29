@@ -105,6 +105,12 @@ async function run(request) {
 
   try {
     switch (action) {
+    case "pause":
+      await queue.pause();
+      return { paused: true };
+    case "resume":
+      await queue.resume();
+      return { paused: false };
     case "retry": {
       const job = await getJob(queue, payload.jobID);
       const state = requiredString(payload.state, "state");

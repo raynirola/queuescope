@@ -8,6 +8,7 @@ struct JobTableView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            JobSearchControls()
             HStack {
                 Label("Runs", systemImage: "list.bullet.rectangle")
                     .font(.subheadline.weight(.semibold))
@@ -25,7 +26,7 @@ struct JobTableView: View {
                     Label("Add job", systemImage: "plus")
                 }
                 .controlSize(.small)
-                .disabled(model.selectedQueue == nil || model.activeJobAction != nil)
+                .disabled(model.selectedQueue == nil || model.activeJobAction != nil || !model.canWrite)
 
                 Menu {
                     Button {
@@ -55,7 +56,8 @@ struct JobTableView: View {
                 }
                 .menuStyle(.button)
                 .controlSize(.small)
-                .disabled(model.selectedVisibleJobCount == 0 || model.activeJobAction != nil)
+                .disabled(model.selectedVisibleJobCount == 0 || model.activeJobAction != nil || model.isReadOnly)
+                if model.appliedJobFilter == nil {
                 Text(model.runPageRangeText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -76,6 +78,7 @@ struct JobTableView: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
+                }
             }
             .frame(height: 28)
             .alert("Remove selected jobs?", isPresented: $isBulkRemoveConfirmationPresented) {
@@ -118,7 +121,7 @@ struct JobTableView: View {
                     ForEach(Array(model.jobs.enumerated()), id: \.element.id) { index, job in
                         RunsRow(
                             job: job,
-                            isSelected: model.selectedJob?.id == job.id,
+                            isSelected: model.selectedJob?.id == job.id && model.selectedJob?.queueName == job.queueName,
                             isChecked: model.isJobSelectedForBulk(job),
                             isAlternate: index.isMultiple(of: 2),
                             stateColor: stateColor(job.state),

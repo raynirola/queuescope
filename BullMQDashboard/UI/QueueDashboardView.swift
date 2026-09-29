@@ -33,9 +33,6 @@ enum QueueWorkspaceView: String, CaseIterable, Identifiable {
         }
     }
 
-    var isComingSoon: Bool {
-        self == .flowGraph
-    }
 }
 
 struct QueueDashboardView: View {
@@ -48,6 +45,7 @@ struct QueueDashboardView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         header(queue)
+                        QueueRefreshControls()
                         content(for: queue)
                     }
                     .padding(.horizontal, 26)
@@ -98,7 +96,7 @@ struct QueueDashboardView: View {
 
     private var emptyStateDescription: String {
         if model.isLoading { return model.statusMessage }
-        return model.isConnected ? "Add a queue manually or select one from the queue list." : "Enter a Redis URL, then add BullMQ queues by name."
+        return model.isConnected ? "Discover queues in the sidebar, add one by name, or select a saved queue." : "Enter a Redis URL, then discover or add BullMQ queues."
     }
 
     @ViewBuilder
@@ -111,7 +109,7 @@ struct QueueDashboardView: View {
             statusCards(queue)
             JobTableView()
         case .flowGraph:
-            FlowGraphComingSoonView()
+            JobFlowPanel()
         case .schedulers:
             SchedulersPanel(style: .detailed)
         case .workers:
@@ -173,22 +171,6 @@ struct QueueDashboardView: View {
         }
     }
 
-}
-
-private struct FlowGraphComingSoonView: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("Flow graph coming soon", systemImage: "point.3.connected.trianglepath.dotted")
-        } description: {
-            Text("Parent and child jobs will be visualized here once FlowProducer support lands.")
-        }
-        .frame(maxWidth: .infinity, minHeight: 340)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.055))
-        }
-    }
 }
 
 private struct MetricsGrid: View {
@@ -1423,7 +1405,7 @@ private struct WorkersPanel: View {
             if model.workers.isEmpty {
                 SectionEmptyState(
                     icon: "person.2.slash",
-                    message: "Worker metadata keys were not found for this queue."
+                    message: "No named worker connections found. This view requires CLIENT LIST access and BullMQ worker connection names."
                 )
             } else {
                 VStack(spacing: 8) {
@@ -1443,7 +1425,7 @@ private struct WorkersPanel: View {
                 header
                 SectionEmptyState(
                     icon: "person.2.slash",
-                    message: "Worker metadata keys were not found for this queue."
+                    message: "No named worker connections found. This view requires CLIENT LIST access and BullMQ worker connection names."
                 )
             }
             .panelStyle(minHeight: 220)
@@ -1485,7 +1467,7 @@ private struct WorkersPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("Processing presence and recent activity")
+            Text("Connected BullMQ workers from Redis CLIENT LIST. Connection presence does not prove a worker is processing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1526,31 +1508,16 @@ private struct WorkerRow: View {
                         .background(statusColor.opacity(0.10), in: Capsule())
                 }
 
-                HStack(spacing: 8) {
-                    if let activeJob = worker.raw["activeJobName"] ?? worker.raw["activeJobId"] {
-                        Text(activeJob)
-                            .lineLimit(1)
-                    } else {
-                        Text("No active job")
-                    }
-
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-
-                    Text(workerSignalText)
-                        .lineLimit(1)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text("Redis client \(worker.id)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 10)
 
-            HStack(spacing: 8) {
-                metric("conc", worker.raw["concurrency"] ?? "—", color: .blue)
-                metric("done", worker.raw["processed"] ?? "0", color: .green)
-                metric("fail", worker.raw["failed"] ?? "0", color: .red)
-            }
+            Text(worker.raw["addr"] ?? "Unknown address")
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -1561,19 +1528,6 @@ private struct WorkerRow: View {
         }
     }
 
-    private func metric(_ label: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(label)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-        .frame(width: 38, alignment: .trailing)
-    }
-
     private var statusText: String {
         (worker.raw["status"] ?? "unknown").lowercased()
     }
@@ -1581,7 +1535,7 @@ private struct WorkerRow: View {
     private var statusColor: Color {
         switch statusText {
         case "processing", "active": .blue
-        case "idle", "waiting": .green
+        case "connected", "idle", "waiting": .green
         case "stalled", "unhealthy": .orange
         case "failed", "offline": .red
         default: .secondary
@@ -1591,6 +1545,7 @@ private struct WorkerRow: View {
     private var statusIcon: String {
         switch statusText {
         case "processing", "active": "bolt.fill"
+        case "connected": "network"
         case "idle", "waiting": "pause.fill"
         case "stalled", "unhealthy": "exclamationmark.triangle.fill"
         case "failed", "offline": "xmark"
@@ -1598,29 +1553,7 @@ private struct WorkerRow: View {
         }
     }
 
-    private var heartbeatText: String {
-        guard let raw = worker.raw["lastHeartbeatAt"],
-              let milliseconds = Double(raw) else {
-            return "unknown"
-        }
 
-        let date = Date(timeIntervalSince1970: milliseconds / 1000)
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
-        if seconds < 60 {
-            return "\(seconds)s ago"
-        }
-        if seconds < 3_600 {
-            return "\(seconds / 60)m ago"
-        }
-        if seconds < 86_400 {
-            return "\(seconds / 3_600)h ago"
-        }
-        return date.formatted(date: .abbreviated, time: .omitted)
-    }
-
-    private var workerSignalText: String {
-        worker.raw["source"] == "active-list" ? "inferred from active jobs" : "heartbeat \(heartbeatText)"
-    }
 }
 
 private struct WorkerDetailSection: View {
@@ -1645,15 +1578,13 @@ private struct WorkerDetailSection: View {
             VStack(spacing: 0) {
                 WorkerDetailRow(icon: statusIcon, tint: statusColor, label: "Status", value: statusText)
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "play.rectangle", tint: .blue, label: "Active job", value: activeJobText)
+                WorkerDetailRow(icon: "network", tint: .blue, label: "Address", value: worker.raw["addr"] ?? "Unknown")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "waveform.path.ecg", tint: .green, label: workerSignalLabel, value: workerSignalText)
+                WorkerDetailRow(icon: "clock", tint: .green, label: "Connection age", value: "\(worker.raw["age"] ?? "?") seconds")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "slider.horizontal.3", tint: .blue, label: "Concurrency", value: worker.raw["concurrency"] ?? "—")
+                WorkerDetailRow(icon: "pause", tint: .gray, label: "Connection idle", value: "\(worker.raw["idle"] ?? "?") seconds")
                 Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "checkmark", tint: .green, label: "Processed", value: worker.raw["processed"] ?? "0")
-                Divider().padding(.leading, 56)
-                WorkerDetailRow(icon: "xmark", tint: .red, label: "Failed", value: worker.raw["failed"] ?? "0")
+                WorkerDetailRow(icon: "terminal", tint: .blue, label: "Last Redis command", value: worker.raw["cmd"] ?? "Unknown")
                 Divider().padding(.leading, 56)
                 WorkerDetailRow(icon: "number", tint: .gray, label: "Worker id", value: worker.id, isMonospaced: true)
             }
@@ -1666,10 +1597,6 @@ private struct WorkerDetailSection: View {
         }
     }
 
-    private var activeJobText: String {
-        worker.raw["activeJobName"] ?? worker.raw["activeJobId"] ?? "No active job"
-    }
-
     private var statusText: String {
         (worker.raw["status"] ?? "unknown").lowercased()
     }
@@ -1677,7 +1604,7 @@ private struct WorkerDetailSection: View {
     private var statusColor: Color {
         switch statusText {
         case "processing", "active": .blue
-        case "idle", "waiting": .green
+        case "connected", "idle", "waiting": .green
         case "stalled", "unhealthy": .orange
         case "failed", "offline": .red
         default: .secondary
@@ -1687,6 +1614,7 @@ private struct WorkerDetailSection: View {
     private var statusIcon: String {
         switch statusText {
         case "processing", "active": "bolt.fill"
+        case "connected": "network"
         case "idle", "waiting": "pause.fill"
         case "stalled", "unhealthy": "exclamationmark.triangle.fill"
         case "failed", "offline": "xmark"
@@ -1694,33 +1622,7 @@ private struct WorkerDetailSection: View {
         }
     }
 
-    private var heartbeatText: String {
-        guard let raw = worker.raw["lastHeartbeatAt"],
-              let milliseconds = Double(raw) else {
-            return "unknown"
-        }
 
-        let date = Date(timeIntervalSince1970: milliseconds / 1000)
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
-        if seconds < 60 {
-            return "\(seconds)s ago"
-        }
-        if seconds < 3_600 {
-            return "\(seconds / 60)m ago"
-        }
-        if seconds < 86_400 {
-            return "\(seconds / 3_600)h ago"
-        }
-        return date.formatted(date: .abbreviated, time: .omitted)
-    }
-
-    private var workerSignalLabel: String {
-        worker.raw["source"] == "active-list" ? "Signal" : "Heartbeat"
-    }
-
-    private var workerSignalText: String {
-        worker.raw["source"] == "active-list" ? "Inferred from active jobs" : heartbeatText
-    }
 }
 
 private struct WorkerDetailRow: View {

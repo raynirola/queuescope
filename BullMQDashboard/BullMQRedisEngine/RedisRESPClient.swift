@@ -6,13 +6,21 @@ actor RedisRESPClient {
     private var parser = RESPParser()
     private let commandGate = AsyncCommandGate()
     private let connectTimeout: TimeInterval = 12
-    private let commandTimeout: TimeInterval = 12
+    private let commandTimeout: TimeInterval
+
+    init(commandTimeout: TimeInterval = 12) {
+        self.commandTimeout = commandTimeout
+    }
 
     func connect(_ config: RedisConnectionConfig) async throws {
+        disconnect()
+        guard let port = UInt16(exactly: config.port), port > 0, config.database >= 0 else {
+            throw BullMQDashboardError.invalidRedisURL
+        }
         let parameters: NWParameters = config.useTLS ? .tls : .tcp
         let connection = NWConnection(
             host: NWEndpoint.Host(config.host),
-            port: NWEndpoint.Port(rawValue: UInt16(config.port)) ?? 6379,
+            port: NWEndpoint.Port(rawValue: port) ?? 6379,
             using: parameters
         )
         self.connection = connection
@@ -58,21 +66,27 @@ actor RedisRESPClient {
             connection.start(queue: .global(qos: .userInitiated))
         }
 
-        if let password = config.password, !password.isEmpty {
-            if let username = config.username, !username.isEmpty {
-                _ = try await command(["AUTH", username, password])
-            } else {
-                _ = try await command(["AUTH", password])
+        do {
+            if let password = config.password, !password.isEmpty {
+                if let username = config.username, !username.isEmpty {
+                    _ = try await command(["AUTH", username, password])
+                } else {
+                    _ = try await command(["AUTH", password])
+                }
             }
-        }
-        if config.database > 0 {
-            _ = try await command(["SELECT", String(config.database)])
+            if config.database > 0 {
+                _ = try await command(["SELECT", String(config.database)])
+            }
+        } catch {
+            disconnect()
+            throw error
         }
     }
 
     func disconnect() {
         connection?.cancel()
         connection = nil
+        parser = RESPParser()
     }
 
     func command(_ parts: [String]) async throws -> RESPValue {
@@ -80,31 +94,41 @@ actor RedisRESPClient {
     }
 
     func commands(_ commands: [[String]]) async throws -> [RESPValue] {
-        guard let connection else { throw BullMQDashboardError.notConnected }
         guard !commands.isEmpty else { return [] }
+        try Task.checkCancellation()
         await commandGate.wait()
-        defer {
-            Task { await commandGate.signal() }
-        }
-
-        let payload = encode(commands)
-        try await send(payload, on: connection)
+        defer { Task { await commandGate.signal() } }
+        try Task.checkCancellation()
+        guard let connection else { throw BullMQDashboardError.notConnected }
 
         var responses: [RESPValue] = []
         responses.reserveCapacity(commands.count)
-
-        while responses.count < commands.count {
-            if let parsed = try parser.parseNext() {
-                if case .error(let message) = parsed {
-                    throw BullMQDashboardError.redis(message)
+        do {
+            try await send(encode(commands), on: connection)
+            while responses.count < commands.count {
+                guard self.connection === connection else { throw BullMQDashboardError.notConnected }
+                if let parsed = try parser.parseNext() {
+                    // A Redis error is still one reply. Drain the whole pipeline before throwing.
+                    responses.append(parsed)
+                    continue
                 }
-                responses.append(parsed)
-                continue
+                let chunk = try await receive(on: connection)
+                guard self.connection === connection else { throw BullMQDashboardError.notConnected }
+                parser.append(chunk)
             }
-            let chunk = try await receive(on: connection)
-            parser.append(chunk)
+        } catch {
+            // After a timeout, cancellation or malformed frame we cannot associate
+            // future replies with commands safely. Require an explicit reconnect.
+            if self.connection === connection { disconnect() }
+            if error is CancellationError { throw error }
+            throw BullMQDashboardError.connectionLost(error.localizedDescription)
         }
-
+        // Once sent, even a cancelled caller must consume its full batch. This
+        // keeps normal view changes from disconnecting a healthy shared session.
+        try Task.checkCancellation()
+        for response in responses {
+            if case .error(let message) = response { throw BullMQDashboardError.redis(message) }
+        }
         return responses
     }
 
@@ -132,6 +156,7 @@ actor RedisRESPClient {
             let gate = AsyncCompletionGate()
             let timeout = DispatchWorkItem {
                 gate.complete {
+                    connection.cancel()
                     continuation.resume(throwing: BullMQDashboardError.redis("Timed out sending command to Redis."))
                 }
             }
@@ -154,6 +179,7 @@ actor RedisRESPClient {
             let gate = AsyncCompletionGate()
             let timeout = DispatchWorkItem {
                 gate.complete {
+                    connection.cancel()
                     continuation.resume(throwing: BullMQDashboardError.redis("Timed out waiting for Redis response."))
                 }
             }

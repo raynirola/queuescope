@@ -21,6 +21,12 @@ struct SidebarView: View {
 
             Divider()
 
+            HStack {
+                Button(model.discoveryCursor == "0" ? "Discover queues" : "Scan more") { Task { await model.discoverMoreQueues() } }
+                    .disabled(!model.isConnected || model.isLoading)
+                if model.hasDiscoveredQueues && model.discoveryCursor == "0" { Image(systemName: "checkmark.circle").foregroundStyle(.secondary) }
+                Spacer()
+            }.padding(.horizontal, 18).padding(.vertical, 8)
             queueList
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -158,7 +164,7 @@ struct SidebarView: View {
                 ManualQueuePopover(
                     queueName: $manualQueueName,
                     displayName: $manualQueueDisplayName,
-                    prefix: model.prefix,
+                    prefix: model.activePrefix,
                     addQueue: addManualQueue
                 )
             }
@@ -202,11 +208,12 @@ struct SidebarView: View {
     }
 
     private var connectionLabel: String {
-        model.isConnected ? "\(model.prefix) · \(model.redisURL.redactedRedisDisplay)" : "Open Connections to connect"
+        guard model.isConnected, let connection = model.activeConnection else { return "Open Connections to connect" }
+        return "\(connection.prefix) · \(connection.host):\(connection.port)/\(connection.database)"
     }
 
     private var connectionTitle: String {
-        model.isConnected ? model.connectionProfileName : "No connection"
+        model.isConnected ? (model.activeConnection?.name ?? "Redis") : "No connection"
     }
 
     private var filteredQueues: [QueueSummary] {
@@ -287,7 +294,7 @@ struct SidebarView: View {
                     ManualQueuePopover(
                         queueName: $manualQueueName,
                         displayName: $manualQueueDisplayName,
-                        prefix: model.prefix,
+                        prefix: model.activePrefix,
                         addQueue: addManualQueue
                     )
                 }
@@ -438,6 +445,7 @@ private struct ManualQueuePopover: View {
 }
 
 struct ConnectionManagerView: View {
+    @State private var revealRedisURL = false
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     private let profileTags = ["local", "production", "staging", "testing", "preview"]
@@ -535,12 +543,27 @@ struct ConnectionManagerView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                Toggle("Read-only connection", isOn: $model.connectionReadOnly)
+                    .help("Disables every job and queue mutation after connecting.")
                 Text("Redis URL")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
-                TextField("redis://127.0.0.1:6379", text: $model.redisURL)
+                HStack {
+                    Group {
+                        if revealRedisURL {
+                            TextField("redis://127.0.0.1:6379", text: $model.redisURL)
+                        } else {
+                            SecureField("Redis URL", text: $model.redisURL)
+                        }
+                    }
                     .textFieldStyle(.roundedBorder)
                     .font(.callout.monospaced())
+                    Button { revealRedisURL.toggle() } label: {
+                        Image(systemName: revealRedisURL ? "eye.slash" : "eye")
+                    }
+                    .help(revealRedisURL ? "Hide Redis URL" : "Reveal Redis URL")
+                    .accessibilityLabel(revealRedisURL ? "Hide Redis URL" : "Reveal Redis URL")
+                }
             }
 
             HStack(alignment: .bottom, spacing: 12) {
@@ -580,6 +603,7 @@ struct ConnectionManagerView: View {
                     Label(model.isConnected ? "Disconnect" : "Connect", systemImage: model.isConnected ? "bolt.slash" : "bolt")
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(model.activeJobAction != nil || model.activeLoadingPhases.contains(.connecting))
             }
 
             Spacer()
@@ -715,6 +739,7 @@ private struct ProfileRow: View {
         .onTapGesture {
             connect()
         }
+        .disabled(model.activeJobAction != nil || model.activeLoadingPhases.contains(.connecting))
         .padding(10)
         .background(Color(nsColor: .textBackgroundColor).opacity(0.78), in: RoundedRectangle(cornerRadius: 8))
         .overlay {

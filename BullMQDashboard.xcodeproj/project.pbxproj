@@ -34,6 +34,7 @@
 		100000000000000000000114 /* RESPParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000214 /* RESPParserTests.swift */; };
 		100000000000000000000115 /* JSONSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000216 /* JSONSyntaxHighlighter.swift */; };
 		100000000000000000000117 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000218 /* Assets.xcassets */; };
+		110000000000000000000001 /* QueueFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -75,6 +76,7 @@
 		100000000000000000000215 /* BullMQDashboardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BullMQDashboardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000216 /* JSONSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		100000000000000000000218 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		110000000000000000000002 /* QueueFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueFeatureViews.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -180,6 +182,7 @@
 				10000000000000000000020F /* JobTableView.swift */,
 				100000000000000000000216 /* JSONSyntaxHighlighter.swift */,
 				100000000000000000000210 /* QueueDashboardView.swift */,
+				110000000000000000000002 /* QueueFeatureViews.swift */,
 				100000000000000000000211 /* SidebarView.swift */,
 			);
 			path = UI;
@@ -345,6 +348,7 @@
 				10000000000000000000010F /* JobTableView.swift in Sources */,
 				100000000000000000000115 /* JSONSyntaxHighlighter.swift in Sources */,
 				100000000000000000000110 /* QueueDashboardView.swift in Sources */,
+				110000000000000000000001 /* QueueFeatureViews.swift in Sources */,
 				100000000000000000000111 /* SidebarView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -543,6 +547,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TH48DG8RVN;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 4;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -559,6 +564,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TH48DG8RVN;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 4;
 				GENERATE_INFOPLIST_FILE = YES;
