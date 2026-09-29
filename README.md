@@ -72,9 +72,7 @@ The UI talks to `BullMQEngine`, keeping Redis reads and BullMQ-backed writes beh
 
 ## License
 
-QueueScope is proprietary source-visible software. No use, modification,
-distribution, hosting, or derivative works are allowed without explicit written
-permission from Ray Nirola. See [LICENSE](LICENSE).
+QueueScope is open-source software licensed under the [MIT License](LICENSE).
 
 ## Safety
 

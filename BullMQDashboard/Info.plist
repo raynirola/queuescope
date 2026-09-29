@@ -27,7 +27,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 Ray Nirola. All rights reserved.</string>
+	<string>Copyright © 2026 Ray Nirola.</string>
 	<key>NSMainStoryboardFile</key>
 	<string></string>
 	<key>SUAutomaticallyUpdate</key>
