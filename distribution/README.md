@@ -1,6 +1,6 @@
 # Distribution
 
-QueueScope ships as a signed, notarized universal macOS app through GitHub Releases and the [Homebrew tap](https://github.com/raynirola/homebrew-tap). The [public website](https://raynirola.github.io/queuescope/) is deployed from `site/` by `.github/workflows/pages.yml` on main.
+QueueScope ships as a signed, notarized universal macOS app through GitHub Releases and the [Homebrew tap](https://github.com/raynirola/homebrew-tap). The [public website](https://queuescope.app/) is deployed from `site/` by `.github/workflows/pages.yml` on main.
 
 ## Release updates
 
