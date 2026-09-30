@@ -334,10 +334,75 @@ final class AppModelRefreshTests: XCTestCase {
         }
     }
 
+    func testFailureInboxFollowsQueueSelectionDuringScan() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        let email = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .failing)
+        let reports = QueueSummary(name: "reports", prefix: "bull", counts: .empty, health: .failing)
+        model.queues = [email, reports]
+        engine.failedJobsByQueue = [
+            "email": [makeJob(id: "email-1", queueName: "email", state: .failed)],
+            "reports": [makeJob(id: "report-1", queueName: "reports", state: .failed)]
+        ]
+        model.selectedQueue = email
+        model.selectedView = .failures
+        await model.scanFailures()
+        XCTAssertEqual(model.failureJobs.map(\.id), ["email-1"])
+        engine.failedPageDelay = 100_000_000
+        let oldScan = Task { await model.scanFailures() }
+        try await Task.sleep(for: .milliseconds(20))
+        model.selectQueue(reports)
+        XCTAssertTrue(model.failureJobs.isEmpty)
+        await oldScan.value
+        for _ in 0..<100 {
+            if model.failureJobs.map(\.id) == ["report-1"], !model.isScanningFailures { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.failureQueueNames, ["reports"])
+        XCTAssertEqual(model.failureJobs.map(\.id), ["report-1"])
+        XCTAssertTrue(model.newlyObservedFailures.isEmpty)
+        await model.disconnect()
+    }
+
+    func testFailureInboxScopeResetsPaginationAndKeepsAllQueuesAvailable() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        let email = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .failing)
+        let reports = QueueSummary(name: "reports", prefix: "bull", counts: .empty, health: .healthy)
+        model.queues = [email, reports]
+        engine.failedJobsByQueue = ["email": (0..<620).map { makeJob(id: String($0), queueName: "email", state: .failed) }, "reports": []]
+        model.selectedQueue = email
+        await model.scanFailures()
+        XCTAssertTrue(model.failureScanHasMore)
+        model.selectQueue(reports)
+        XCTAssertNil(model.failureScanDate)
+        await model.scanFailures()
+        XCTAssertEqual(model.failureQueueNames, ["reports"])
+        XCTAssertTrue(model.failureJobs.isEmpty)
+        XCTAssertFalse(model.failureScanHasMore)
+        model.failureInboxAllQueues = true
+        await model.scanFailures()
+        XCTAssertEqual(model.failureJobs.count, 500)
+        model.selectQueue(email)
+        XCTAssertEqual(model.failureJobs.count, 500)
+        await model.scanFailures(restart: false)
+        XCTAssertEqual(model.failureJobs.count, 620)
+        XCTAssertFalse(model.failureScanHasMore)
+        model.failureInboxAllQueues = false
+        await model.scanFailures()
+        XCTAssertEqual(model.failureQueueNames, ["email"])
+        XCTAssertEqual(model.failureJobs.count, 500)
+        XCTAssertTrue(model.newlyObservedFailures.isEmpty)
+        await model.disconnect()
+    }
+
     func testFailureInboxGroupsAcrossQueuesAndTracksNewJobs() async {
         let engine = FakeBullMQEngine()
         let model = makeModel(engine: engine)
         await model.connect()
+        model.failureInboxAllQueues = true
         model.queues = ["email", "reports"].map { QueueSummary(name: $0, prefix: "bull", counts: .empty, health: .failing) }
         var first = makeJob(id: "1", queueName: "email", state: .failed)
         first.failedReason = "HTTP 429: rate limited"
@@ -391,7 +456,7 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertTrue(model.isReadOnly)
         XCTAssertNil(engine.connectedConfig)
         XCTAssertEqual(model.failureGroups.count, 3)
-        XCTAssertEqual(model.failureJobs.count, 54)
+        XCTAssertEqual(model.failureJobs.count, 18)
         await model.inspectJob(JobReference(prefix: "bull", queue: "email-delivery", jobID: "demo-1"))
         XCTAssertNotNil(model.selectedJobDetail)
         await model.connect()

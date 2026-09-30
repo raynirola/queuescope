@@ -170,7 +170,7 @@ private struct WorkspaceViewSidebar: View {
                 Text("Workspace")
                     .font(.headline)
             }
-            Text(model.selectedView == .failures ? "All queues" : (model.selectedQueue?.resolvedDisplayName ?? "Select a queue"))
+            Text(model.selectedView == .failures && (model.failureInboxAllQueues || model.selectedQueue == nil) ? "All queues" : (model.selectedQueue?.resolvedDisplayName ?? "Select a queue"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
