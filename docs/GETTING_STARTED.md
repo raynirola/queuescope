@@ -30,7 +30,7 @@ Forwards listen only on loopback. Disconnecting, switching connections, or quitt
 
 ## Investigate a failure
 
-1. Open **Failure inbox**. It scans retained failed jobs across discovered and saved queues in the active connection/prefix.
+1. Open **Failure inbox**. It scans retained failed jobs for the selected queue and refreshes when you select a different queue. Enable **All queues** to group failures across discovered and saved queues in the active connection/prefix. Switching scope resets scan pagination and the previous-scan comparison.
 2. Use **Scan more** to continue a partial scan. Each action reads at most five pages of 100 entries; the coverage indicator identifies partial results.
 3. Filter by error text or queue name, then expand a group. UUIDs and long hexadecimal identifiers are normalized in the first error line; HTTP/error codes remain distinct.
 4. Review affected queues, failure timestamps, and a representative payload. Choose **Inspect** for a full error, payload, attempts, and available actions. Existing job confirmations and read-only restrictions still apply.

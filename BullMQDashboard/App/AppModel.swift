@@ -34,7 +34,14 @@ final class AppModel: ObservableObject {
     @Published var connectionProfileName = "Local Redis"
     @Published var connectionProfileTag = "local"
     @Published var profiles: [RedisConnectionProfile] = []
-    @Published var selectedQueue: QueueSummary?
+    @Published var selectedQueue: QueueSummary? {
+        didSet {
+            guard !failureInboxAllQueues,
+                  oldValue?.name != selectedQueue?.name || oldValue?.prefix != selectedQueue?.prefix else { return }
+            resetFailureScan()
+            if selectedView == .failures { scheduleRefresh(for: .failures) }
+        }
+    }
     @Published var selectedView: QueueWorkspaceView = .overview
     @Published var queues: [QueueSummary] = []
     @Published var selectedState: BullMQState?
@@ -88,6 +95,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var failureScanHasMore = false
     @Published private(set) var isScanningFailures = false
     @Published private(set) var newlyObservedFailures: Set<String> = []
+    @Published var failureInboxAllQueues = false {
+        didSet {
+            guard oldValue != failureInboxAllQueues else { return }
+            resetFailureScan()
+            if selectedView == .failures { scheduleRefresh(for: .failures) }
+        }
+    }
     private var previousFailureIDs: Set<String>?
     private var failurePage = 0
     private var failureScanRevision = 0
@@ -101,7 +115,11 @@ final class AppModel: ObservableObject {
             newlyObservedFailures = []
             failureQueuesCompleted = 0
             failurePage = 0
-            failureQueueNames = Array(Set(queues.map(\.name))).sorted()
+            if !failureInboxAllQueues, let selectedQueue {
+                failureQueueNames = [selectedQueue.name]
+            } else {
+                failureQueueNames = Array(Set(queues.map(\.name))).sorted()
+            }
             failureScanHasMore = !failureQueueNames.isEmpty
             failureScanDate = Date()
         }
@@ -426,6 +444,7 @@ final class AppModel: ObservableObject {
             guard generation == connectionGeneration, isDemo else { return }
             if let overview { queues[index] = overview }
         }
+        failureInboxAllQueues = false
         selectedQueue = queues.first
         selectedView = .failures
         statusMessage = "Offline demo · sample data · read-only"
@@ -1512,18 +1531,7 @@ final class AppModel: ObservableObject {
         jobFlow = JobFlow()
         flowReference = nil
         selectedJobPrefix = nil
-        failureScanRevision += 1
-        isScanningFailures = false
-        failureJobs = []
-        failureFirstObserved = [:]
-        failureLastObserved = [:]
-        failureScanDate = nil
-        failureScanError = nil
-        failureScanHasMore = false
-        failureQueuesCompleted = 0
-        failureQueueNames = []
-        previousFailureIDs = nil
-        newlyObservedFailures = []
+        resetFailureScan()
         connectionGeneration += 1
         refreshRequestID += 1
         refreshTask?.cancel()
@@ -1625,6 +1633,22 @@ final class AppModel: ObservableObject {
         snapshots = try snapshotStore.load(scope: queueScope(for: config))
         lastSnapshotCountsByQueue[queueName] = counts
         lastSnapshotNativeMetricsByQueue[queueName] = nativeMetrics
+    }
+
+    private func resetFailureScan() {
+        failureScanRevision += 1
+        isScanningFailures = false
+        failureJobs = []
+        failureFirstObserved = [:]
+        failureLastObserved = [:]
+        failureScanDate = nil
+        failureScanError = nil
+        failureScanHasMore = false
+        failureQueuesCompleted = 0
+        failureQueueNames = []
+        previousFailureIDs = nil
+        newlyObservedFailures = []
+        failurePage = 0
     }
 
     private func scheduleRefresh(for view: QueueWorkspaceView) {

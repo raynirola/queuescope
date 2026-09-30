@@ -199,8 +199,12 @@ struct FailureInboxView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Failure inbox").font(.system(size: 28, weight: .semibold))
-                Text("Related failures across all discovered and saved queues in this connection.")
+                Text(model.failureInboxAllQueues || model.selectedQueue == nil
+                     ? "Related failures across all discovered and saved queues in this connection."
+                     : "Related failures in \(model.selectedQueue?.resolvedDisplayName ?? "selected queue").")
                     .foregroundStyle(.secondary)
+                Toggle("All queues", isOn: $model.failureInboxAllQueues)
+                    .toggleStyle(.checkbox)
                 HStack {
                     Button("Scan failures") { Task { await model.scanFailures() } }
                         .disabled(!model.isConnected || model.isScanningFailures)
@@ -278,5 +282,9 @@ struct FailureInboxView: View {
                 }
             }.padding(24)
         }
+        .onChange(of: model.selectedQueue?.name) { _, _ in
+            if !model.failureInboxAllQueues { selectedGroup = nil; search = "" }
+        }
+        .onChange(of: model.failureInboxAllQueues) { _, _ in selectedGroup = nil; search = "" }
     }
 }
