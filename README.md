@@ -1,6 +1,6 @@
 # QueueScope
 
-[Website and product tour](https://raynirola.github.io/queuescope/) · [Privacy](https://raynirola.github.io/queuescope/privacy.html)
+[Website and product tour](https://queuescope.app/) · [Privacy](https://queuescope.app/privacy.html)
 
 ```sh
 brew install --cask raynirola/tap/queuescope
