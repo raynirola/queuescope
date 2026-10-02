@@ -1,6 +1,6 @@
 # QueueScope
 
-[Website and product tour](https://queuescope.app/) · [Privacy](https://queuescope.app/privacy.html)
+[Website](https://queuescope.app/) · [BullMQ debugging guides](https://queuescope.app/guides.html) · [Privacy](https://queuescope.app/privacy.html)
 
 ```sh
 brew install --cask raynirola/tap/queuescope
