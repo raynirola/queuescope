@@ -37,15 +37,3 @@ document.getElementById("copy-install")?.addEventListener("click", async () => {
     status.textContent = "Select and copy the command above.";
   }
 });
-
-const narrowLayout = matchMedia("(max-width: 800px)");
-function updateTabOrientation() {
-  document
-    .querySelector('[role="tablist"]')
-    .setAttribute(
-      "aria-orientation",
-      narrowLayout.matches ? "horizontal" : "vertical",
-    );
-}
-updateTabOrientation();
-narrowLayout.addEventListener("change", updateTabOrientation);
