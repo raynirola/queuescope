@@ -2,7 +2,7 @@
 
 The QueueScope website stream for `https://queuescope.app` uses measurement ID `G-MSGLSK2RV2`, managed under `raynirola@gmail.com`. The Google tag loads only after visitors allow analytics; the choice is stored locally and can be changed with Analytics settings. Advertising personalization and Google signals are disabled. Deployment uses the existing GitHub Pages workflow.
 
-The website records:
+The website records the following events. `download_click` and `homebrew_copy` are registered as GA4 key events, counted once per event with no assigned monetary value.
 
 | Event            | Meaning                                                                  | Parameters                                                         |
 | ---------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------ |
