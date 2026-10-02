@@ -7,10 +7,10 @@
 <link rel="canonical" href="https://queuescope.app/">
 <meta property="og:title" content="QueueScope — A native dashboard for BullMQ.">
 <meta property="og:description" content="A free, native macOS dashboard for BullMQ. No dashboard server required.">
-<meta property="og:image" content="https://queuescope.app/assets/failure-inbox.png">
+<meta property="og:image" content="https://queuescope.app/assets/failure-inbox-showcase.png">
 <meta property="og:url" content="https://queuescope.app/">
 <meta property="og:type" content="website">
-<meta name="theme-color" content="#ffffff"><link rel="stylesheet" href="styles.css?v=20261002-light"><script src="analytics.js?v=20261002" defer></script><script src="app.js?v=20261002" defer></script>
+<meta name="theme-color" content="#ffffff"><link rel="stylesheet" href="styles.css?v=20261002-showcase"><script src="analytics.js?v=20261002" defer></script><script src="app.js?v=20261002-showcase" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -25,16 +25,16 @@
 <div class="proof"><span>No account required</span><span>Credentials in Keychain</span><span>Node runtime included</span><span>MIT licensed</span></div>
 </section>
 <section class="wrap section" id="tour">
-<div class="section-heading"><div><p class="eyebrow">A shorter path to an answer</p><h2>Find failures.<br>Inspect the jobs behind them.</h2></div><p>Explore a three-step walkthrough using real app screens and offline sample data.</p></div>
-<div class="tour-layout"><div class="tour-steps" role="tablist" aria-label="Product walkthrough" aria-orientation="vertical">
+<div class="section-heading"><div><p class="eyebrow">A shorter path to an answer</p><h2>Find failures.<br>Inspect the jobs behind them.</h2></div><p>Explore a three-step walkthrough with light-mode app showcases and offline sample data.</p></div>
+<div class="tour-layout"><div class="tour-steps" role="tablist" aria-label="Product walkthrough" aria-orientation="horizontal">
 <button type="button" class="step" role="tab" id="tab-0" aria-selected="true" aria-controls="panel-0" tabindex="0"><span class="step-number">01</span><span><strong>Find the pattern</strong><small>See related errors together, across queues.</small></span></button>
 <button type="button" class="step" role="tab" id="tab-1" aria-selected="false" aria-controls="panel-1" tabindex="-1"><span class="step-number">02</span><span><strong>Inspect the evidence</strong><small>Read payloads, attempts, and stack traces.</small></span></button>
 <button type="button" class="step" role="tab" id="tab-2" aria-selected="false" aria-controls="panel-2" tabindex="-1"><span class="step-number">03</span><span><strong>Follow the dependency</strong><small>Trace parent and child jobs across queues.</small></span></button>
 <p class="tour-note">Try it yourself: choose <strong>Explore offline demo</strong> in Connection Manager. No Redis connection needed.</p>
 </div><div class="tour-panels">
-<div role="tabpanel" id="panel-0" aria-labelledby="tab-0" tabindex="0"><img loading="lazy" src="assets/failure-inbox.png" width="2240" height="1440" alt="Three failure groups in the offline demo."><p>Scan retained failures in bounded batches. Coverage and observation timestamps make it clear what you’re looking at.</p></div>
-<div role="tabpanel" id="panel-1" aria-labelledby="tab-1" tabindex="0" hidden><img loading="lazy" class="inspector" src="assets/job-inspector.png" width="1000" height="1700" alt="Job inspector with sample JSON, failure reason, and stack trace."><p>Open an individual job to see the full context. On your own writable connection, retry, duplicate, promote, or remove eligible jobs.</p></div>
-<div role="tabpanel" id="panel-2" aria-labelledby="tab-2" tabindex="0" hidden><img loading="lazy" src="assets/flow-graph.png" width="2240" height="1700" alt="A sample BullMQ parent job connected to its child in the flow view."><p>Follow a blocked workflow to the child job behind it. Inspect jobs across queues without losing the thread.</p></div>
+<div role="tabpanel" id="panel-0" aria-labelledby="tab-0" tabindex="0"><img loading="lazy" src="assets/failure-inbox-showcase.png" width="1536" height="1024" alt="Three failure groups in the offline demo."><p>Scan retained failures in bounded batches. Coverage and observation timestamps make it clear what you’re looking at.</p></div>
+<div role="tabpanel" id="panel-1" aria-labelledby="tab-1" tabindex="0" hidden><img loading="lazy" src="assets/job-inspector-showcase.png" width="1536" height="1024" alt="Job inspector with sample JSON, attempts, timestamps, and job options."><p>Open an individual job to see the full context. On your own writable connection, retry, duplicate, promote, or remove eligible jobs.</p></div>
+<div role="tabpanel" id="panel-2" aria-labelledby="tab-2" tabindex="0" hidden><img loading="lazy" src="assets/flow-graph-showcase.png" width="1536" height="1024" alt="A sample BullMQ parent job connected to its child in the flow view."><p>Follow a blocked workflow to the child job behind it. Inspect jobs across queues without losing the thread.</p></div>
 </div></div>
 </section>
 <section class="wrap section"><p class="eyebrow">Built for the way you work</p><div class="features"><article><h3>Private Redis, reachable</h3><p>Connect through SSH with existing keys or an agent. Known-host checks and Redis TLS verification stay intact.</p></article><article><h3>A proper Mac app</h3><p>Native controls, light and dark appearances, local connections, and no dashboard service to run.</p></article><article><h3>Look before you act</h3><p>Start with a read-only profile. Inspect payloads and state before using BullMQ-backed job actions.</p></article></div></section>
