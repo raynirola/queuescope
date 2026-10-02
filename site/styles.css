@@ -717,3 +717,12 @@ footer nav {
     padding-right: 12px;
   }
 }
+
+.dashboard-comparison {
+  min-width: 720px;
+}
+.dashboard-comparison caption {
+  text-align: left;
+  padding: 0 14px 18px;
+  color: var(--muted);
+}
