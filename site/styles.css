@@ -544,6 +544,20 @@ footer nav {
   }
 }
 @media (max-width: 480px) {
+  header nav {
+    gap: 10px;
+  }
+  header nav a {
+    white-space: nowrap;
+  }
+  header .brand {
+    font-size: 16px;
+    gap: 8px;
+  }
+  header .mark {
+    width: 32px;
+    height: 32px;
+  }
   .brand {
     font-size: 18px;
   }
@@ -561,4 +575,82 @@ footer nav {
   html {
     scroll-behavior: auto;
   }
+}
+
+.guide {
+  max-width: 820px;
+  padding-top: 40px;
+  padding-bottom: 64px;
+}
+.guide h1 {
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.12;
+}
+.guide h2 {
+  font-size: 25px;
+  margin: 36px 0 14px;
+  letter-spacing: -0.5px;
+}
+.guide p,
+.guide li {
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.8;
+}
+.guide li {
+  margin-bottom: 12px;
+}
+.guide-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 16px;
+  margin: 32px 0;
+}
+.guide-cta {
+  padding: 28px;
+  border-radius: 20px;
+  background: var(--panel);
+  margin-top: 40px;
+}
+.guide-cta h2 {
+  margin-top: 0;
+}
+.guide-list {
+  display: grid;
+  gap: 16px;
+}
+.guide-list > a {
+  display: block;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  text-decoration: none;
+}
+.guide-list > a:hover {
+  background: var(--panel);
+}
+.guide-list h2 {
+  margin: 0;
+}
+.guide-list span {
+  color: var(--accent);
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.guide table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.guide th,
+.guide td {
+  text-align: left;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.guide th {
+  font-weight: 600;
 }
