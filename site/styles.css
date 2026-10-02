@@ -167,10 +167,6 @@ h1 {
   padding-bottom: 16px;
 }
 .section-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: end;
-  gap: 40px;
   margin-bottom: 28px;
 }
 h2 {
@@ -181,7 +177,8 @@ h2 {
   margin: 0 0 18px;
 }
 .section-heading > p {
-  max-width: 290px;
+  max-width: 650px;
+  margin: 0;
   color: var(--muted);
   font-size: 14px;
 }
@@ -252,7 +249,7 @@ h2 {
   font-size: 13px;
   margin: 0;
   padding: 18px 24px;
-  max-width: 760px;
+  text-wrap: pretty;
 }
 .features {
   display: grid;
@@ -547,9 +544,6 @@ footer nav {
   }
 }
 @media (max-width: 480px) {
-  header nav a:first-child {
-    display: none;
-  }
   .brand {
     font-size: 18px;
   }

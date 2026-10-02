@@ -10,11 +10,11 @@
 <meta property="og:image" content="https://queuescope.app/assets/failure-inbox-showcase.png">
 <meta property="og:url" content="https://queuescope.app/">
 <meta property="og:type" content="website">
-<meta name="theme-color" content="#ffffff"><link rel="stylesheet" href="styles.css?v=20261002-bento"><script src="analytics.js?v=20261002" defer></script><script src="app.js?v=20261002-bento" defer></script>
+<meta name="theme-color" content="#ffffff"><link rel="stylesheet" href="styles.css?v=20261002-bento2"><script src="analytics.js?v=20261002" defer></script><script src="app.js?v=20261002-bento2" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="wrap"><a class="brand" href="./" aria-label="QueueScope home"><img class="mark" src="assets/app-icon.png" width="36" height="36" alt=""> QueueScope</a><nav aria-label="Main navigation"><a href="#tour">Product tour</a><a href="#install">Install</a><a href="https://github.com/raynirola/queuescope">GitHub ↗</a></nav></header>
+<header class="wrap"><a class="brand" href="./" aria-label="QueueScope home"><img class="mark" src="assets/app-icon.png" width="36" height="36" alt=""> QueueScope</a><nav aria-label="Main navigation"><a href="#install">Install</a><a href="https://github.com/raynirola/queuescope">GitHub ↗</a></nav></header>
 <main id="main">
 <section class="hero wrap">
 <div class="eyebrow">Native macOS · Open source · v0.5.0</div>
@@ -32,9 +32,9 @@
 <button type="button" class="step" role="tab" id="tab-2" aria-selected="false" aria-controls="panel-2" tabindex="-1"><span class="step-number">03</span><span><strong>Follow the dependency</strong><small>Trace parent and child jobs across queues.</small></span></button>
 
 </div><div class="tour-panels">
-<div role="tabpanel" id="panel-0" aria-labelledby="tab-0" tabindex="0"><img loading="lazy" src="assets/failure-inbox-showcase.png" width="1536" height="1024" alt="Three failure groups in the offline demo."><p>Scan retained failures in bounded batches. Coverage and observation timestamps make it clear what you’re looking at.</p></div>
-<div role="tabpanel" id="panel-1" aria-labelledby="tab-1" tabindex="0" hidden><img loading="lazy" src="assets/job-inspector-showcase.png" width="1536" height="1024" alt="Job inspector with sample JSON, attempts, timestamps, and job options."><p>Open an individual job to see the full context. On your own writable connection, retry, duplicate, promote, or remove eligible jobs.</p></div>
-<div role="tabpanel" id="panel-2" aria-labelledby="tab-2" tabindex="0" hidden><img loading="lazy" src="assets/flow-graph-showcase.png" width="1536" height="1024" alt="A sample BullMQ parent job connected to its child in the flow view."><p>Follow a blocked workflow to the child job behind it. Inspect jobs across queues without losing the thread.</p></div>
+<div role="tabpanel" id="panel-0" aria-labelledby="tab-0" tabindex="0"><img loading="lazy" src="assets/failure-inbox-showcase.png" width="1536" height="1024" alt="Three failure groups in the offline demo."><p>Group related failures across queues, with scan coverage and timestamps for context.</p></div>
+<div role="tabpanel" id="panel-1" aria-labelledby="tab-1" tabindex="0" hidden><img loading="lazy" src="assets/job-inspector-showcase.png" width="1536" height="1024" alt="Job inspector with sample JSON, attempts, timestamps, and job options."><p>Inspect payloads, attempts, and job options. Manage eligible jobs on writable connections.</p></div>
+<div role="tabpanel" id="panel-2" aria-labelledby="tab-2" tabindex="0" hidden><img loading="lazy" src="assets/flow-graph-showcase.png" width="1536" height="1024" alt="A sample BullMQ parent job connected to its child in the flow view."><p>Trace parent and child jobs across queues to find the dependency blocking your workflow.</p></div>
 </div></div>
 </section>
 <section class="wrap section" aria-label="QueueScope features"><div class="features">
