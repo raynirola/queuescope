@@ -266,7 +266,7 @@ class ReadOnlyCaskTests(unittest.TestCase):
 
 class CommitTests(unittest.TestCase):
     def test_tree_preserves_live_base_and_ref_is_never_forced(self):
-        gh = publication.GitHub(publication.REPOSITORY)
+        gh = publication.GitHub(publication.TAP_REPOSITORY)
         gh.head = mock.Mock(return_value=HEAD)
         gh.api = mock.Mock(side_effect=[{"sha": "new-tree"}, {"sha": "new-commit"},
                                         {"object": {"sha": "new-commit"}}])
@@ -278,7 +278,7 @@ class CommitTests(unittest.TestCase):
         self.assertEqual(calls[2].kwargs["data"], {"sha": "new-commit", "force": False})
 
     def test_head_move_before_start_writes_nothing(self):
-        gh = publication.GitHub(publication.REPOSITORY)
+        gh = publication.GitHub(publication.TAP_REPOSITORY)
         gh.head = mock.Mock(return_value="concurrent-head")
         gh.api = mock.Mock()
         with self.assertRaisesRegex(publication.PublishError, "main moved"):
@@ -286,7 +286,7 @@ class CommitTests(unittest.TestCase):
         gh.api.assert_not_called()
 
     def test_head_move_before_ref_update_leaves_ref_untouched(self):
-        gh = publication.GitHub(publication.REPOSITORY)
+        gh = publication.GitHub(publication.TAP_REPOSITORY)
         gh.head = mock.Mock(side_effect=[HEAD, "concurrent-head"])
         gh.api = mock.Mock(side_effect=[{"sha": "tree"}, {"sha": "commit"}])
         with self.assertRaisesRegex(publication.PublishError, "main moved"):
@@ -294,7 +294,7 @@ class CommitTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs["method"] == "POST" for call in gh.api.call_args_list))
 
     def test_atomic_ref_conflict_is_not_retried_or_forced(self):
-        gh = publication.GitHub(publication.REPOSITORY)
+        gh = publication.GitHub(publication.TAP_REPOSITORY)
         gh.head = mock.Mock(return_value=HEAD)
         gh.api = mock.Mock(side_effect=[{"sha": "tree"}, {"sha": "commit"}, publication.PublishError("409")])
         with self.assertRaisesRegex(publication.PublishError, "409"):
@@ -303,14 +303,14 @@ class CommitTests(unittest.TestCase):
         self.assertIs(gh.api.call_args.kwargs["data"]["force"], False)
 
     def test_noop_is_a_read_only_head_check(self):
-        gh = publication.GitHub(publication.REPOSITORY)
+        gh = publication.GitHub(publication.TAP_REPOSITORY)
         gh.head = mock.Mock(return_value=HEAD)
         gh.api = mock.Mock()
         self.assertEqual(gh.commit_changes(HEAD, "tree", {}, {}, "message"), HEAD)
         gh.api.assert_not_called()
 
     def test_symlinks_are_not_loaded_as_source(self):
-        gh = publication.GitHub(publication.REPOSITORY)
+        gh = publication.GitHub(publication.TAP_REPOSITORY)
         with self.assertRaises(publication.PublishError):
             gh.text({"path": "site/index.html", "type": "blob", "mode": "120000"})
 
