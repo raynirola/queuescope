@@ -52,7 +52,7 @@ xcodebuild -exportArchive -archivePath "$WORK/QueueScope.xcarchive" \
 APP="$WORK/export/QueueScope.app"
 test -d "$APP"
 for binary in "$APP/Contents/MacOS/QueueScope" "$APP/Contents/Helpers/node"; do
-  lipo -verify_arch arm64 x86_64 "$binary"
+  python3 "$ROOT/scripts/release/architectures.py" "$binary"
 done
 codesign --verify --deep --strict --verbose=2 "$APP"
 check_signature() {
@@ -72,7 +72,7 @@ while IFS= read -r -d '' signed; do
     runtime=false
     if printf '%s' "$description" | grep -q executable; then runtime=true; fi
     check_signature "$signed" "$runtime"
-    lipo -verify_arch arm64 x86_64 "$signed"
+    python3 "$ROOT/scripts/release/architectures.py" "$signed"
   fi
 done < <(find "$APP" -type f -print0)
 if find "$APP/Contents/Resources/BullMQActionBridge" -name '*.node' -print | grep -q .; then
