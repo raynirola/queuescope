@@ -193,7 +193,11 @@ def required_entry(entries: dict, path: str) -> dict:
 def validate_brew_cask(content: str) -> None:
     """Validate in an isolated local tap; never install the app or mutate a real tap."""
     environment = dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_ANALYTICS="1",
-                       HOMEBREW_NO_INSTALL_FROM_API="1")
+                       HOMEBREW_DEVELOPER="1")
+    # Developer commands must not persistently enable developer mode. Keep
+    # API-backed core metadata available so audit does not bootstrap a core tap.
+    # An inherited legacy flag is just as problematic as setting it ourselves.
+    environment.pop("HOMEBREW_NO_INSTALL_FROM_API", None)
     # Homebrew only needs the public artifact and public cask metadata. Do not
     # give cask evaluation access to the token that can write the tap.
     for key in ("GH_TOKEN", "GITHUB_TOKEN", "HOMEBREW_GITHUB_API_TOKEN"):

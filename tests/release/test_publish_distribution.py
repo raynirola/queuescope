@@ -99,7 +99,7 @@ class CaskTests(unittest.TestCase):
         gh.commit_changes.assert_not_called()
 
     def test_brew_uses_temporary_named_tap_and_all_three_checks(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+        with mock.patch.dict(publication.os.environ, {"HOMEBREW_NO_INSTALL_FROM_API": "1", "GH_TOKEN": "test-only", "GITHUB_TOKEN": "test-only"}), tempfile.TemporaryDirectory() as directory, mock.patch.object(
                 publication.subprocess, "check_output", return_value=directory + "\n"), mock.patch.object(
                 publication.subprocess, "run") as run:
             publication.validate_brew_cask(CASK)
@@ -108,8 +108,13 @@ class CaskTests(unittest.TestCase):
             for call in run.call_args_list:
                 self.assertNotIn("GH_TOKEN", call.kwargs["env"])
                 self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+                self.assertNotIn("HOMEBREW_NO_INSTALL_FROM_API", call.kwargs["env"])
+                self.assertEqual(call.kwargs["env"]["HOMEBREW_DEVELOPER"], "1")
+                self.assertEqual(call.kwargs["env"]["HOMEBREW_NO_AUTO_UPDATE"], "1")
+                self.assertEqual(call.kwargs["env"]["HOMEBREW_NO_ANALYTICS"], "1")
             self.assertTrue(all(command[-1].startswith("queuescope/release-verification-") for command in calls))
             self.assertEqual(list((Path(directory) / "Library/Taps/queuescope").iterdir()), [])
+            self.assertEqual(publication.os.environ["HOMEBREW_NO_INSTALL_FROM_API"], "1")
 
 
 class CommitTests(unittest.TestCase):
