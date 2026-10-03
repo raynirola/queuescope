@@ -1,6 +1,6 @@
 # QueueScope
 
-[Website](https://queuescope.app/) · [Articles and guides](https://queuescope.app/articles.html) · [FAQ](https://queuescope.app/faq.html) · [Privacy](https://queuescope.app/privacy.html)
+[Website](https://queuescope.app/) · [Get started](https://queuescope.app/getting-started.html) · [Articles and guides](https://queuescope.app/articles.html) · [FAQ](https://queuescope.app/faq.html) · [Privacy](https://queuescope.app/privacy.html)
 
 ```sh
 brew install --cask raynirola/tap/queuescope
