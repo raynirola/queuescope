@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already committed in the Xcode project (for example 0.5.1)
+        required: true
+        type: string
+      commit:
+        description: Full 40-character main commit to release
+        required: true
+        type: string
+      publish:
+        description: Publish the verified release, Sparkle feed, Homebrew cask and website
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: queuescope-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_COMMIT: ${{ inputs.commit }}
+  APPLE_TEAM_ID: TH48DG8RVN
+
+jobs:
+  test:
+    if: github.repository == 'raynirola/queuescope' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Validate immutable release input and local tooling
+        run: |
+          git diff --exit-code
+          python3 scripts/release/metadata.py validate --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --output "$RUNNER_TEMP/release-metadata"
+          python3 -m unittest discover -s tests/release -v
+          for script in scripts/release/*.sh; do bash -n "$script"; done
+          brew install redis
+          echo "BULLMQ_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+          echo "REDIS_SERVER_PATH=$(command -v redis-server)" >> "$GITHUB_ENV"
+      - name: Run macOS and BullMQ regressions without release credentials
+        run: |
+          xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard \
+            -configuration Debug -destination 'platform=macOS' \
+            DEVELOPMENT_TEAM='' CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test
+          npm ci --omit=optional --ignore-scripts --prefix BullMQActionBridge
+          npm test --prefix BullMQActionBridge
+
+  package:
+    needs: test
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Validate release environment before building
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          for name in DEVELOPER_ID_P12_BASE64 DEVELOPER_ID_P12_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD SPARKLE_ED_PRIVATE_KEY; do
+            test -n "${!name}" || { echo "::error::Missing release environment secret: $name"; exit 1; }
+          done
+          if [ "$PUBLISH" = true ]; then
+            test -n "$HOMEBREW_TAP_TOKEN" || { echo '::error::HOMEBREW_TAP_TOKEN is required to publish all distribution channels'; exit 1; }
+            GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api repos/raynirola/homebrew-tap --jq '.permissions.push' | grep -qx true
+          fi
+          python3 scripts/release/metadata.py validate --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --output "$RUNNER_TEMP/release-metadata"
+      - name: Archive, sign, notarize, staple and verify
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: bash scripts/release/package.sh
+      - name: Clean temporary signing material
+        if: always()
+        run: |
+          for dir in "$RUNNER_TEMP"/queuescope-signing.*; do
+            test -d "$dir" || continue
+            security delete-keychain "$dir/release.keychain-db" >/dev/null 2>&1 || true
+            rm -rf "$dir"
+          done
+      - name: Upload only verified public artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: queuescope-release-${{ inputs.version }}
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    if: inputs.publish
+    needs: package
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: queuescope-release-${{ inputs.version }}
+          path: release-output
+      - name: Publish immutable app assets and update Sparkle last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release/publish.sh
+      - name: Update and verify Homebrew cask
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: bash scripts/release/update-tap.sh
+      - name: Update source cask mirror and website downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/publish_distribution.py
+      - name: Mark latest only after every distribution channel is verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/release/check-release-order.sh
+          gh release edit "v$RELEASE_VERSION" --repo raynirola/queuescope --latest

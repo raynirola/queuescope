@@ -4,6 +4,8 @@ QueueScope ships as a signed, notarized universal macOS app through GitHub Relea
 
 ## Release updates
 
+Use the protected GitHub Actions [release workflow](../docs/RELEASING.md) for repeatable signed, notarized builds and coordinated distribution updates. Its first credential-backed run is required before considering this automation production-verified.
+
 1. Publish and verify the signed release ZIP and Sparkle feed.
 2. Update the version and SHA-256 in `Casks/queuescope.rb` here and in the tap. Run `brew audit --cask raynirola/tap/queuescope`, `brew style --cask raynirola/tap/queuescope`, and `brew fetch --cask raynirola/tap/queuescope` against the updated cask.
 3. Update website version labels, download URLs, compatibility details, and privacy version when behavior changes. Use sample-data screenshots only.
