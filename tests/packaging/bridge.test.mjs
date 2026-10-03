@@ -25,6 +25,9 @@ async function inspectBundle(directory, bundleRoot = directory) {
   for (const name of await readdir(directory)) {
     const entry = path.join(directory, name);
     const stat = await lstat(entry);
+    // npm 10 leaves this scope directory behind when omitting optional packages.
+    // Only an empty real directory is harmless; packages, files, and links fail.
+    if (name === "@msgpackr-extract" && stat.isDirectory() && (await readdir(entry)).length === 0) continue;
     assert.ok(!name.endsWith(".node"), `native binary bundled: ${entry}`);
     assert.ok(!["next", "@nestjs", "msgpackr-extract", "@msgpackr-extract"].includes(name), `unexpected dependency: ${entry}`);
     if (stat.isSymbolicLink()) {
@@ -35,6 +38,45 @@ async function inspectBundle(directory, bundleRoot = directory) {
     }
   }
 }
+
+test("bundle inspection allows only an empty optional scope", async t => {
+  const work = await mkdtemp(path.join(os.tmpdir(), "queuescope-bundle-inspection-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const emptyBundle = path.join(work, "empty-scope");
+  await mkdir(path.join(emptyBundle, "node_modules/@msgpackr-extract"), { recursive: true });
+  await inspectBundle(emptyBundle);
+
+  const rejected = [
+    ["populated optional scope", "node_modules/@msgpackr-extract/msgpackr-extract-linux-x64/package.json", /unexpected dependency/],
+    ["unexpected scope contents", "node_modules/@msgpackr-extract/leftover", /unexpected dependency/],
+    ["unscoped optional package", "node_modules/msgpackr-extract/package.json", /unexpected dependency/],
+    ["native addon", "node_modules/example/addon.node", /native binary bundled/],
+    ["Next package", "node_modules/next/package.json", /unexpected dependency/],
+    ["Nest package", "node_modules/@nestjs/core/package.json", /unexpected dependency/],
+  ];
+  for (const [name, relativePath, error] of rejected) {
+    await t.test(`rejects ${name}`, async () => {
+      const bundle = path.join(work, name);
+      const entry = path.join(bundle, relativePath);
+      await mkdir(path.dirname(entry), { recursive: true });
+      await writeFile(entry, "{}");
+      await assert.rejects(inspectBundle(bundle), error);
+    });
+  }
+  await t.test("rejects an optional scope symlink even when its target is empty", async () => {
+    const bundle = path.join(work, "scope-symlink");
+    await mkdir(path.join(bundle, "node_modules"), { recursive: true });
+    await mkdir(path.join(bundle, "empty"));
+    await symlink("../empty", path.join(bundle, "node_modules/@msgpackr-extract"));
+    await assert.rejects(inspectBundle(bundle), /unexpected dependency/);
+  });
+  await t.test("rejects a workspace symlink leaving the bundle", async () => {
+    const bundle = path.join(work, "workspace-symlink");
+    await mkdir(path.join(bundle, "node_modules"), { recursive: true });
+    await symlink(emptyBundle, path.join(bundle, "node_modules/workspace-package"));
+    await assert.rejects(inspectBundle(bundle), /symlink leaves bundle/);
+  });
+});
 
 test("app bridge packaging uses its own lock outside the workspace", { timeout: 120000 }, async t => {
   const work = await mkdtemp(path.join(os.tmpdir(), "queuescope-bridge-test-"));
