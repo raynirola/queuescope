@@ -62,6 +62,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate current public cask without release credentials or publication
+        env:
+          BREW_READONLY_GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 -B - <<'PY'
           from pathlib import Path

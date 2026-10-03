@@ -31,6 +31,8 @@ PROJECT_PATH = "BullMQDashboard.xcodeproj/project.pbxproj"
 CASK_URL = ('https://github.com/raynirola/queuescope/releases/download/'
             'v#{version}/QueueScope-#{version}-macOS.zip')
 PUBLIC_SITE = "https://queuescope.app/"
+PUBLIC_TAP_CASK = f"https://raw.githubusercontent.com/{TAP_REPOSITORY}/main/{CASK_PATH}"
+MAX_PUBLIC_CASK_BYTES = 64 * 1024
 
 
 class PublishError(RuntimeError):
@@ -202,6 +204,11 @@ def validate_brew_cask(content: str) -> None:
     # give cask evaluation access to the token that can write the tap.
     for key in ("GH_TOKEN", "GITHUB_TOKEN", "HOMEBREW_GITHUB_API_TOKEN"):
         environment.pop(key, None)
+    # The validation job explicitly supplies this token with contents:read only.
+    # Never repurpose an inherited API token, whose write scope is unknown.
+    read_only_token = environment.pop("BREW_READONLY_GITHUB_TOKEN", None)
+    if read_only_token:
+        environment["HOMEBREW_GITHUB_API_TOKEN"] = read_only_token
     brew_root = Path(subprocess.check_output(["brew", "--repository"], text=True, env=environment).strip())
     tap_parent = brew_root / "Library/Taps/queuescope"
     tap_parent.mkdir(parents=True, exist_ok=True)
@@ -222,12 +229,38 @@ def validate_brew_cask(content: str) -> None:
             raise PublishError("Homebrew validation unexpectedly modified the proposed cask")
 
 
+def validate_public_cask(manifest: dict) -> str:
+    """Read-only CI phase: validate exact proposed tap bytes and report their hash."""
+    with public_request(PUBLIC_TAP_CASK) as response:
+        payload = response.read(MAX_PUBLIC_CASK_BYTES + 1)
+    if len(payload) > MAX_PUBLIC_CASK_BYTES:
+        raise PublishError("Public tap cask exceeded the 64 KiB validation size limit")
+    updated = updated_cask(payload.decode("utf-8"), manifest["version"], manifest["sha256"])
+    verify_public_asset(manifest)
+    validate_brew_cask(updated)
+    digest = hashlib.sha256(updated.encode("utf-8")).hexdigest()
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write(f"cask_sha256={digest}\n")
+    print(f"Validated cask SHA-256: {digest}", flush=True)
+    return digest
+
+
 def publish_tap(manifest: dict, github: GitHub) -> str:
     head, tree_sha, entries = github.snapshot()
     source = github.text(required_entry(entries, CASK_PATH))
     updated = updated_cask(source, manifest["version"], manifest["sha256"])
+    validated_digest = os.environ.get("BREW_VALIDATED_CASK_SHA256")
+    if validated_digest is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", validated_digest):
+            raise PublishError("BREW_VALIDATED_CASK_SHA256 must be exactly 64 lowercase hexadecimal characters")
+        if hashlib.sha256(updated.encode("utf-8")).hexdigest() != validated_digest:
+            raise PublishError("Live tap cask differs from the validated cask; rerun read-only validation before publishing")
     verify_public_asset(manifest)
-    validate_brew_cask(updated)
+    if validated_digest is None:
+        validate_brew_cask(updated)
+    else:
+        print("Fresh proposed cask matches the read-only Homebrew validation digest", flush=True)
     changes = {} if source == updated else {CASK_PATH: updated}
     result = github.commit_changes(head, tree_sha, entries, changes,
                                    f"Update QueueScope to {manifest['version']}")
@@ -371,14 +404,18 @@ def publish_distribution(manifest: dict, github: GitHub, timeout: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tap", action="store_true", help="Validate and update the separate Homebrew tap")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--tap", action="store_true", help="Validate and update the separate Homebrew tap")
+    mode.add_argument("--validate-cask", action="store_true", help="Read-only Homebrew validation; no GH_TOKEN required")
     parser.add_argument("--manifest", type=Path, default=Path("release-output/manifest.json"))
     args = parser.parse_args()
     try:
-        if not os.environ.get("GH_TOKEN"):
+        if not args.validate_cask and not os.environ.get("GH_TOKEN"):
             raise PublishError("GH_TOKEN is required; use the appropriate repository-scoped token")
         manifest = load_manifest(args.manifest, os.environ.get("RELEASE_VERSION", ""), os.environ.get("RELEASE_COMMIT", ""))
-        if args.tap:
+        if args.validate_cask:
+            validate_public_cask(manifest)
+        elif args.tap:
             publish_tap(manifest, GitHub(TAP_REPOSITORY))
         else:
             timeout = int(os.environ.get("PAGES_TIMEOUT_SECONDS", "900"))
