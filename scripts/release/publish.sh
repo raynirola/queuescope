@@ -36,6 +36,7 @@ verify_download() {
 # the release environment must be the exclusive writer of this appcast.
 gh api "repos/$REPO/releases/tags/appcast" > "$WORK/appcast-release.json"
 test "$(jq -r .draft "$WORK/appcast-release.json")" = false
+APPCAST_RELEASE_ID="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "$WORK/appcast-release.json")"
 fetch_public "https://github.com/$REPO/releases/download/appcast/appcast.xml" "$WORK/previous-appcast.xml"
 BASE_SHA="$(cat "$DIR/appcast-base.sha256")"
 LIVE_SHA="$(shasum -a 256 "$WORK/previous-appcast.xml" | awk '{print $1}')"
@@ -52,19 +53,44 @@ for el in ET.parse(sys.argv[1]).iter('{http://www.andymatuschak.org/xml-namespac
         raise SystemExit('Refusing to replace a newer Sparkle release')
 PY
 
-# Release reruns may finish a matching draft or verify matching public assets.
-if gh api "repos/$REPO/releases/tags/$TAG" > "$WORK/version-release.json" 2> "$WORK/release-error"; then
-  echo "Resuming existing $TAG release"
-else
-  grep -q 'HTTP 404' "$WORK/release-error" || { cat "$WORK/release-error" >&2; exit 1; }
+# The tag endpoint excludes drafts. List authenticated releases and retain the
+# numeric REST ID so a newly created draft is addressable before it has a Git tag.
+python3 scripts/release/release_lookup.py "$TAG" > "$WORK/version-release.json"
+if jq -e '. == null' "$WORK/version-release.json" >/dev/null; then
   gh release create "$TAG" --repo "$REPO" --target "$RELEASE_COMMIT" --draft \
     --title "QueueScope $RELEASE_VERSION" --notes-file "$DIR/release-notes.md"
+  python3 scripts/release/release_lookup.py "$TAG" > "$WORK/version-release.json"
+else
+  echo "Resuming existing $TAG release"
 fi
+VERSION_RELEASE_ID="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "$WORK/version-release.json")"
+assert_version_release() {
+  gh api "repos/$REPO/releases/$VERSION_RELEASE_ID" > "$WORK/version-release.json"
+  jq -e --arg tag "$TAG" --arg commit "$RELEASE_COMMIT" --argjson id "$VERSION_RELEASE_ID" \
+    '.id == $id and .tag_name == $tag and .target_commitish == $commit and
+     (.draft | type == "boolean") and .prerelease == false and (.assets | type == "array")' \
+    "$WORK/version-release.json" >/dev/null || {
+      echo '::error::Release identity, source or prerelease state differs; refusing publication'; exit 1;
+    }
+}
+assert_version_release
 
 ensure_asset() {
-  local tag="$1" file="$2" name
+  local tag="$1" file="$2" name release_id
   name="$(basename "$file")"
-  if gh api "repos/$REPO/releases/tags/$tag" --jq '.assets[].name' | grep -Fxq "$name"; then
+  if [ "$tag" = "$TAG" ]; then
+    assert_version_release
+    release_id="$VERSION_RELEASE_ID"
+  elif [ "$tag" = appcast ]; then
+    release_id="$APPCAST_RELEASE_ID"
+  else
+    echo '::error::Unexpected release asset destination'; exit 1
+  fi
+  gh api "repos/$REPO/releases/$release_id" > "$WORK/asset-release.json"
+  jq -e --arg tag "$tag" --argjson id "$release_id" \
+    '.id == $id and .tag_name == $tag and (.assets | type == "array")' \
+    "$WORK/asset-release.json" >/dev/null
+  if jq -r '.assets[].name' "$WORK/asset-release.json" | grep -Fxq "$name"; then
     mkdir -p "$WORK/existing/$tag"
     gh release download "$tag" --repo "$REPO" --pattern "$name" --dir "$WORK/existing/$tag" --clobber
     cmp "$file" "$WORK/existing/$tag/$name" || { echo "::error::Existing $tag/$name differs; refusing to overwrite"; exit 1; }
@@ -82,14 +108,13 @@ if gh api "repos/$REPO/git/ref/tags/$TAG" > "$WORK/tag.json" 2> "$WORK/tag-error
   test "$TAG_SHA" = "$RELEASE_COMMIT" || { echo '::error::Release tag points to a different source commit'; exit 1; }
 else
   grep -q 'HTTP 404' "$WORK/tag-error" || { cat "$WORK/tag-error" >&2; exit 1; }
-  test "$(gh api "repos/$REPO/releases/tags/$TAG" --jq .target_commitish)" = "$RELEASE_COMMIT"
 fi
-test "$(gh api "repos/$REPO/releases/tags/$TAG" --jq .prerelease)" = false
 ensure_asset "$TAG" "$DIR/$ZIP"
 ensure_asset "$TAG" "$DIR/SHA256SUMS"
 ensure_asset "$TAG" "$DIR/manifest.json"
 ensure_asset "$TAG" "$DIR/appcast.xml"
 
+assert_version_release
 gh release edit "$TAG" --repo "$REPO" --draft=false --latest=false
 TAG_SHA="$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha)"
 TAG_TYPE="$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.type)"
