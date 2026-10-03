@@ -16,8 +16,34 @@ VERSION = "0.5.1"
 COMMIT = "a" * 40
 HEAD = "b" * 40
 CHECKSUM = "c" * 64
-CASK = (ROOT / "distribution/Casks/queuescope.rb").read_text()
-HOMEPAGE = (ROOT / "site/index.html").read_text()
+# Fixed historical inputs: a release updates the real cask and site, so reading
+# those files here would silently turn upgrade tests into checksum conflicts.
+CASK = '''cask "queuescope" do
+  version "0.5.0"
+  sha256 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+
+  url "https://github.com/raynirola/queuescope/releases/download/v#{version}/QueueScope-#{version}-macOS.zip"
+  name "QueueScope"
+  desc "Dashboard for BullMQ queues"
+  homepage "https://github.com/raynirola/queuescope"
+
+  auto_updates true
+  depends_on macos: :sonoma
+
+  app "QueueScope.app"
+end
+'''
+HOMEPAGE = '''<!DOCTYPE html>
+<html lang="en"><head>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "QueueScope", "softwareVersion": "0.5.0", "downloadUrl": "https://github.com/raynirola/queuescope/releases/download/v0.5.0/QueueScope-0.5.0-macOS.zip"}</script>
+</head><body>
+<div class="eyebrow">Native macOS · Open source · v0.5.0</div>
+<a data-download-location="hero" href="https://github.com/raynirola/queuescope/releases/download/v0.5.0/QueueScope-0.5.0-macOS.zip">Download for Mac</a>
+<a data-download-location="install" href="https://github.com/raynirola/queuescope/releases/download/v0.5.0/QueueScope-0.5.0-macOS.zip">Download QueueScope 0.5.0 ↓</a>
+<p>QueueScope 0.5.0 requires macOS 14 or later. BullMQ 5.77.x.</p>
+<a href="https://github.com/raynirola/queuescope">GitHub</a>
+</body></html>
+'''
 MANIFEST = {"version": VERSION, "commit": COMMIT, "build": 8,
             "asset": "QueueScope-0.5.1-macOS.zip", "sha256": CHECKSUM, "size": 3}
 
@@ -297,6 +323,13 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("<!-- concurrent copy edit preserved -->", changes["site/index.html"])
         publication.verify_homepage(changes["site/index.html"], VERSION)
 
+    def test_already_published_metadata_is_a_noop(self):
+        gh, entries = source_github()
+        published = publication.distribution_changes(gh, entries, MANIFEST)
+        current = {publication.PROJECT_PATH: project(), **published}
+        gh.text.side_effect = lambda item: current[item["path"]]
+        self.assertEqual(publication.distribution_changes(gh, entries, MANIFEST), {})
+
     def test_new_marketing_version_or_build_blocks_old_release(self):
         for version, build in (("0.5.2", 8), (VERSION, 9)):
             gh, entries = source_github(version, build)
@@ -306,7 +339,10 @@ class DistributionTests(unittest.TestCase):
     def test_homepage_requires_actual_links_visible_and_structured_version(self):
         gh, entries = source_github()
         html = publication.distribution_changes(gh, entries, MANIFEST)["site/index.html"]
-        invalid = [html.replace(publication.release_url(VERSION), publication.release_url("0.5.0"), 1),
+        invalid = [html.replace(f'href="{publication.release_url(VERSION)}"',
+                                f'href="{publication.release_url("0.5.0")}"', 1),
+                   html.replace(f'"downloadUrl": "{publication.release_url(VERSION)}"',
+                                f'"downloadUrl": "{publication.release_url("0.5.0")}"'),
                    html.replace(f'"softwareVersion": "{VERSION}"', '"softwareVersion": "0.5.0"'),
                    html.replace(f"Download QueueScope {VERSION}", "Download QueueScope 0.5.0"),
                    HOMEPAGE]
