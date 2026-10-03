@@ -37,7 +37,7 @@ def source_github(version=VERSION, build=8):
     gh = mock.Mock(spec=publication.GitHub)
     # Python 3.9 blocks dynamically created assert* mocks even with a class spec.
     # Assign this real API method explicitly; never disable mock safety globally.
-    gh.assert_head = mock.Mock(spec=publication.GitHub.assert_head)
+    gh.assert_head = mock.create_autospec(publication.GitHub("unused").assert_head)
     gh.text.side_effect = lambda item: data[item["path"]]
     return gh, {path: entry(path) for path in data}
 
@@ -197,7 +197,7 @@ class DistributionTests(unittest.TestCase):
 
     def test_pages_failure_is_reported_and_never_verifies_site(self):
         gh = mock.Mock(spec=publication.GitHub)
-        gh.assert_head = mock.Mock(spec=publication.GitHub.assert_head)
+        gh.assert_head = mock.create_autospec(publication.GitHub("unused").assert_head)
         failed = {"id": 2, "status": "completed", "conclusion": "failure", "html_url": "https://github.com/run/2"}
         with mock.patch.object(publication, "pages_runs", side_effect=[[], [failed]]), mock.patch.object(
                 publication, "public_request") as public:
