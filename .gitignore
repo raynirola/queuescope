@@ -24,3 +24,7 @@ xcuserdata/
 node_modules/
 package-lock.json
 !BullMQActionBridge/package-lock.json
+
+# Release automation local output
+__pycache__/
+release-output/

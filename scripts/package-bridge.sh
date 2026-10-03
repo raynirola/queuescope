@@ -25,7 +25,10 @@ cp "$SOURCE_BRIDGE_DIR/bridge.mjs" "$BUILD_BRIDGE_DIR/bridge.mjs"
 cp "$SOURCE_BRIDGE_DIR/package.json" "$BUILD_BRIDGE_DIR/package.json"
 cp "$SOURCE_BRIDGE_DIR/package-lock.json" "$BUILD_BRIDGE_DIR/package-lock.json"
 
-npm ci --omit=dev --prefix "$BUILD_BRIDGE_DIR"
+# BullMQ works with msgpackr's pure-JS fallback. Excluding optional native
+# accelerators keeps the bridge architecture-neutral and avoids unsigned .node
+# binaries inside a universal notarized app. No dependency install scripts run.
+npm ci --omit=dev --omit=optional --ignore-scripts --prefix "$BUILD_BRIDGE_DIR"
 
 cp -R "$BUILD_BRIDGE_DIR/." "$BUNDLE_BRIDGE_DIR/"
 
