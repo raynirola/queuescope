@@ -139,6 +139,30 @@ final class ConnectionProfileStore {
     func clearLastActiveProfileID() { defaults.removeObject(forKey: lastActiveProfileIDKey) }
 }
 
+/// UserDefaults dictionaries otherwise compare canonically equivalent Unicode scope keys as
+/// equal. Encoded keys are ASCII and contain no colon, whereas every legacy connection scope
+/// contains host/port and prefix delimiters. Legacy values are migrated one exact scope at a time.
+private enum QueueScopeStorage {
+    static func key(for scope: String) -> String {
+        "queuescope-scope-v2|" + scope.redisIdentifierKey
+    }
+
+    static func value<Value>(for scope: String, in stored: [String: Value]) -> Value? {
+        if let value = stored[key(for: scope)] { return value }
+        return stored.first { $0.key.utf8.elementsEqual(scope.utf8) }?.value
+    }
+
+    static func setting<Value>(_ value: Value, for scope: String, in stored: [String: Value]) -> [String: Value] {
+        var updated = stored
+        // Never use a canonical String lookup to identify a legacy entry for migration.
+        if let legacy = stored.keys.first(where: { $0.utf8.elementsEqual(scope.utf8) }) {
+            updated.removeValue(forKey: legacy)
+        }
+        updated[key(for: scope)] = value
+        return updated
+    }
+}
+
 final class QueueNameStore {
     private let key = "redis.connection.queue.names"
     private let defaults: UserDefaults
@@ -148,12 +172,14 @@ final class QueueNameStore {
     }
 
     func load(scope: String) -> [String] {
-        storedNames()[scope] ?? []
+        QueueScopeStorage.value(for: scope, in: storedNames()) ?? []
     }
 
     func save(_ names: [String], scope: String) {
-        var stored = storedNames()
-        stored[scope] = Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        var seen = Set<String>()
+        let names = names.filter { seen.insert($0.redisIdentifierKey).inserted }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let stored = QueueScopeStorage.setting(names, for: scope, in: storedNames())
         guard let data = try? JSONEncoder().encode(stored) else { return }
         defaults.set(data, forKey: key)
     }
@@ -173,13 +199,26 @@ final class QueueMetadataStore {
     }
 
     func load(scope: String) -> [QueueSummary] {
-        storedQueues()[scope] ?? []
+        QueueScopeStorage.value(for: scope, in: storedQueues()) ?? []
     }
 
     func save(_ queues: [QueueSummary], scope: String) {
-        var stored = storedQueues()
-        stored[scope] = queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let queues = queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let stored = QueueScopeStorage.setting(queues, for: scope, in: storedQueues())
         guard let data = try? JSONEncoder().encode(stored) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    /// One authoritative metadata write after complete catalog validation. Unlike background
+    /// cache saves, imports surface encoding/storage corruption instead of silently succeeding.
+    func saveImportedQueues(_ queues: [QueueSummary], scope: String) throws {
+        var stored: [String: [QueueSummary]] = [:]
+        if let data = defaults.data(forKey: key) {
+            stored = try JSONDecoder().decode([String: [QueueSummary]].self, from: data)
+        }
+        let queues = queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        stored = QueueScopeStorage.setting(queues, for: scope, in: stored)
+        let data = try JSONEncoder().encode(stored)
         defaults.set(data, forKey: key)
     }
 
@@ -204,12 +243,11 @@ final class QueueWorkspacePreferenceStore {
     }
 
     func load(scope: String) -> QueueWorkspacePreference? {
-        storedPreferences()[scope]
+        QueueScopeStorage.value(for: scope, in: storedPreferences())
     }
 
     func save(_ preference: QueueWorkspacePreference, scope: String) {
-        var stored = storedPreferences()
-        stored[scope] = preference
+        let stored = QueueScopeStorage.setting(preference, for: scope, in: storedPreferences())
         guard let data = try? JSONEncoder().encode(stored) else { return }
         defaults.set(data, forKey: key)
     }

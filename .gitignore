@@ -20,10 +20,13 @@ xcuserdata/
 *.swp
 *.swo
 
-# Local scripts/dependencies used while seeding demo Redis data
+# Node workspaces, standalone bridge dependencies, and example builds
 node_modules/
+dist/
+.next/
 package-lock.json
-!BullMQActionBridge/package-lock.json
+!/package-lock.json
+!/packages/action-bridge/package-lock.json
 
 # Release automation local output
 __pycache__/

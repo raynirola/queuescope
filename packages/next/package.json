@@ -1,0 +1,29 @@
+{
+  "name": "@queuescope/next",
+  "version": "0.1.0",
+  "description": "Explicit server-only queue catalogs for QueueScope in Next.js",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@queuescope/node": "0.1.0",
+    "server-only": "0.0.1"
+  },
+  "peerDependencies": {
+    "next": "^16.0.0"
+  }
+}

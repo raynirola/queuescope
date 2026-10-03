@@ -61,7 +61,8 @@ actor BullMQRedisEngine: BullMQEngine {
             throw BullMQDashboardError.redis("Invalid queue discovery response.")
         }
         let names = arrayStrings(values[1]).compactMap { BullMQParsing.parseQueueName(fromMetaKey: $0, prefix: prefix) }
-        return QueueDiscovery(names: Array(Set(names)).sorted(), nextCursor: values[0].string ?? "0")
+        var seen = Set<String>()
+        return QueueDiscovery(names: names.filter { seen.insert($0.redisIdentifierKey).inserted }.sorted(), nextCursor: values[0].string ?? "0")
     }
 
     func setQueuePaused(queueName: String, prefix: String, paused: Bool) async throws {
@@ -117,7 +118,7 @@ actor BullMQRedisEngine: BullMQEngine {
         var seenAncestors: Set<String> = [reference.id]
         var flow = JobFlow()
         for _ in 0..<8 {
-            let fields = try await hgetall(root.id)
+            let fields = try await hgetall(root.redisKey)
             guard generation == connectionGeneration else { throw CancellationError() }
             guard let key = fields["parentKey"], let parent = JobReference(key: key, preferredPrefix: root.prefix) else { break }
             guard seenAncestors.insert(parent.id).inserted else { flow.truncated = true; break }
@@ -127,7 +128,7 @@ actor BullMQRedisEngine: BullMQEngine {
         if ancestors.count == 8 { flow.truncated = true }
         let chain = Array(ancestors.reversed())
         for (depth, ref) in chain.enumerated() {
-            let fields = try await hgetall(ref.id)
+            let fields = try await hgetall(ref.redisKey)
             guard generation == connectionGeneration else { throw CancellationError() }
             let job: JobSummary?
             do { job = try await findJob(queueName: ref.queue, prefix: ref.prefix, jobID: ref.jobID) }
@@ -142,7 +143,7 @@ actor BullMQRedisEngine: BullMQEngine {
             try Task.checkCancellation()
             let (ref, depth) = pending.removeFirst()
             guard seen.insert(ref.id).inserted else { continue }
-            let fields = try await hgetall(ref.id)
+            let fields = try await hgetall(ref.redisKey)
             guard generation == connectionGeneration else { throw CancellationError() }
             let job: JobSummary?
             do { job = try await findJob(queueName: ref.queue, prefix: ref.prefix, jobID: ref.jobID) }
@@ -150,10 +151,10 @@ actor BullMQRedisEngine: BullMQEngine {
             guard generation == connectionGeneration else { throw CancellationError() }
             flow.nodes.append(JobFlowNode(reference: ref, name: fields["name"] ?? "Missing job", state: job?.state, depth: depth))
             let responses = try await commands([
-                ["SSCAN", "\(ref.id):dependencies", "0", "COUNT", "80"],
-                ["HSCAN", "\(ref.id):processed", "0", "COUNT", "80"],
-                ["HSCAN", "\(ref.id):failed", "0", "COUNT", "80"],
-                ["ZRANGE", "\(ref.id):unsuccessful", "0", "80"]
+                ["SSCAN", "\(ref.redisKey):dependencies", "0", "COUNT", "80"],
+                ["HSCAN", "\(ref.redisKey):processed", "0", "COUNT", "80"],
+                ["HSCAN", "\(ref.redisKey):failed", "0", "COUNT", "80"],
+                ["ZRANGE", "\(ref.redisKey):unsuccessful", "0", "80"]
             ])
             guard generation == connectionGeneration else { throw CancellationError() }
             var keys: [String] = []
@@ -165,7 +166,9 @@ actor BullMQRedisEngine: BullMQEngine {
                 }
             }
             keys += arrayStrings(responses[3])
-            let unique = Array(Set(keys)).sorted()
+            var seenKeys = Set<String>()
+            let unique = keys.filter { seenKeys.insert($0.redisIdentifierKey).inserted }
+                .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
             if unique.count > 80 || (depth - chain.count >= 6 && !unique.isEmpty) { flow.truncated = true }
             guard depth - chain.count < 6 else { continue }
             for key in unique.prefix(80) {

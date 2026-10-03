@@ -55,8 +55,8 @@ jobs:
           xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard \
             -configuration Debug -destination 'platform=macOS' \
             DEVELOPMENT_TEAM='' CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO test
-          npm ci --omit=optional --ignore-scripts --prefix BullMQActionBridge
-          npm test --prefix BullMQActionBridge
+          npm ci --omit=optional --ignore-scripts --prefix packages/action-bridge --workspaces=false
+          npm test --prefix packages/action-bridge --workspaces=false
 
   package:
     needs: test

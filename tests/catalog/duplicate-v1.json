@@ -1,0 +1,1 @@
+{"schema":"queuescope.queue-catalog","version":1,"queues":[{"name":"emails","prefix":"team:prod"},{"name":"emails","prefix":"team:prod","displayName":"Duplicate"}]}

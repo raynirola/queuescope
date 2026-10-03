@@ -41,9 +41,13 @@ Need a shared browser dashboard or legacy Bull support? Compare the documented w
 - Scheduler discovery and live named worker connections from Redis CLIENT LIST.
 - Sparkle-backed manual app update checks.
 
+## Node.js and Next.js adapters
+
+The repository includes npm workspaces for `@queuescope/node` and `@queuescope/next`. Export an explicit queue inventory with optional display names/groups, then import the JSON into the selected existing QueueScope connection. The adapters do not inspect connection settings, access Redis, create queues, or expose a dashboard endpoint. See the [adapter and import guide](docs/ADAPTERS.md) for the local tarball workflow, Next.js server-only usage, limits, and validation.
+
 ## Job Actions
 
-QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `BullMQActionBridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, `Queue.add`, `Queue.pause`, and `Queue.resume`.
+QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `packages/action-bridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, `Queue.add`, `Queue.pause`, and `Queue.resume`.
 
 The Xcode build packages the bridge and its locked production dependencies into `QueueScope.app`, so people using the built app do not run `npm install`. The build machine needs npm available so the `Package BullMQ action bridge` build phase can install the locked bridge dependencies into the app bundle. The app bundles a pinned Node runtime, so job actions work without a separate Node installation. `BULLMQ_NODE_PATH` can override it for development; Homebrew, `/usr/local`, `/usr/bin`, and nvm are fallback locations for older bundles; set `BULLMQ_ACTION_BRIDGE_PATH` only when deliberately overriding the packaged bridge during development.
 
@@ -103,8 +107,8 @@ Use Xcode with Swift 6 support and Node.js/npm. Install Redis locally to run tra
 
 ```sh
 xcodebuild -project BullMQDashboard.xcodeproj -scheme BullMQDashboard -configuration Debug -destination 'platform=macOS' test
-npm ci --prefix BullMQActionBridge
-npm test --prefix BullMQActionBridge
+npm ci --prefix packages/action-bridge --workspaces=false
+npm test --prefix packages/action-bridge --workspaces=false
 ```
 
 For a build without a developer signing identity (also used in CI):

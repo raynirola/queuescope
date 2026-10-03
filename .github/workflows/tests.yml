@@ -19,13 +19,33 @@ jobs:
       - name: Test release helpers and shell syntax
         run: |
           python3 -B -m unittest discover -s tests/release -v
-          for script in scripts/release/*.sh; do bash -n "$script"; done
+          for script in scripts/*.sh scripts/release/*.sh; do bash -n "$script"; done
       - name: Lint workflow syntax with pinned actionlint
         run: |
           curl --fail --location --retry 3 https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz --output "$RUNNER_TEMP/actionlint.tar.gz"
           echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
+
+  adapters:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install adapter workspaces
+        run: npm ci --ignore-scripts
+      - name: Test adapters and published package contents
+        run: |
+          npm test
+          npm run test:packages
+      - name: Verify standalone app bridge packaging
+        run: node --test tests/packaging/bridge.test.mjs
 
   macos:
     runs-on: macos-15
@@ -51,8 +71,8 @@ jobs:
           test
       - name: Test BullMQ mutations against isolated Redis
         run: |
-          npm ci --omit=optional --ignore-scripts --prefix BullMQActionBridge
-          npm test --prefix BullMQActionBridge
+          npm ci --omit=optional --ignore-scripts --prefix packages/action-bridge --workspaces=false
+          npm test --prefix packages/action-bridge --workspaces=false
 
   distribution:
     runs-on: macos-15

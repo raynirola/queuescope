@@ -176,7 +176,7 @@ struct JobFlowPanel: View {
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.4)))
                             }
                             .buttonStyle(.plain)
-                            .help(node.id)
+                            .help(node.reference.redisKey)
                             .position(positions[node.id] ?? .zero)
                         }
                     }
@@ -251,7 +251,7 @@ struct FailureInboxView: View {
                             Text("Observed in this session: \(first.formatted(date: .omitted, time: .shortened)) – \(last.formatted(date: .omitted, time: .shortened))")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        let newCount = group.jobs.filter { model.newlyObservedFailures.contains("\($0.queueName):\($0.id)") }.count
+                        let newCount = group.jobs.filter { model.newlyObservedFailures.contains("\($0.queueName.redisIdentifierKey):\($0.id)") }.count
                         if newCount > 0 {
                             Text("\(newCount) newly observed since the previous completed scan").font(.caption).foregroundStyle(.orange)
                         }
@@ -282,7 +282,7 @@ struct FailureInboxView: View {
                 }
             }.padding(24)
         }
-        .onChange(of: model.selectedQueue?.name) { _, _ in
+        .onChange(of: model.selectedQueue?.id) { _, _ in
             if !model.failureInboxAllQueues { selectedGroup = nil; search = "" }
         }
         .onChange(of: model.failureInboxAllQueues) { _, _ in selectedGroup = nil; search = "" }

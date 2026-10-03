@@ -115,7 +115,8 @@ struct RedisConnectionConfig: Equatable, Sendable {
 }
 
 struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
-    var id: String { name }
+    // Redis treats canonically equivalent Unicode spellings as different byte sequences.
+    var id: String { "\(prefix.redisIdentifierKey):\(name.redisIdentifierKey)" }
     var name: String
     var displayName: String?
     var groupName: String?
@@ -153,6 +154,16 @@ struct QueueSummary: Identifiable, Codable, Equatable, Sendable {
         isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
         health = try container.decode(QueueHealth.self, forKey: .health)
     }
+
+    static func == (lhs: QueueSummary, rhs: QueueSummary) -> Bool {
+        lhs.id == rhs.id && lhs.displayName == rhs.displayName && lhs.groupName == rhs.groupName &&
+            lhs.counts == rhs.counts && lhs.isPaused == rhs.isPaused && lhs.health == rhs.health
+    }
+}
+
+extension String {
+    /// An ASCII key for in-memory dictionaries/sets, not a transformed Redis queue name.
+    var redisIdentifierKey: String { Data(utf8).base64EncodedString() }
 }
 
 struct QueueCounts: Codable, Equatable, Sendable {
@@ -394,18 +405,27 @@ struct JobReference: Hashable, Identifiable, Sendable {
     var prefix: String
     var queue: String
     var jobID: String
-    var id: String { "\(prefix):\(queue):\(jobID)" }
+    /// Byte-exact identity for UI, sets and flow edges; never send this to Redis.
+    var id: String { "\(prefix.redisIdentifierKey):\(queue.redisIdentifierKey):\(jobID.redisIdentifierKey)" }
+    var redisKey: String { "\(prefix):\(queue):\(jobID)" }
     init(prefix: String, queue: String, jobID: String) {
         self.prefix = prefix; self.queue = queue; self.jobID = jobID
     }
     init?(key: String, preferredPrefix: String) {
-        let known = key.hasPrefix(preferredPrefix + ":")
-        let parts = (known ? String(key.dropFirst(preferredPrefix.count + 1)) : key).split(separator: ":", maxSplits: known ? 1 : 2, omittingEmptySubsequences: false).map(String.init)
+        let bytes = Array(key.utf8)
+        let prefixBytes = Array((preferredPrefix + ":").utf8)
+        let known = bytes.starts(with: prefixBytes)
+        let parts = bytes.dropFirst(known ? prefixBytes.count : 0)
+            .split(separator: 0x3a, maxSplits: known ? 1 : 2, omittingEmptySubsequences: false)
+            .map { String(decoding: $0, as: UTF8.self) }
         guard parts.count == (known ? 2 : 3), parts.allSatisfy({ !$0.isEmpty }) else { return nil }
         prefix = known ? preferredPrefix : parts[0]
         queue = parts[known ? 0 : 1]
         jobID = parts[known ? 1 : 2]
     }
+
+    static func == (lhs: JobReference, rhs: JobReference) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 struct JobFlowNode: Identifiable, Sendable {
@@ -432,7 +452,10 @@ struct JobFlow: Sendable {
 struct FailureGroup: Identifiable {
     let id: String
     var jobs: [JobSummary]
-    var queues: [String] { Array(Set(jobs.map(\.queueName))).sorted() }
+    var queues: [String] {
+        var seen = Set<String>()
+        return jobs.map(\.queueName).filter { seen.insert($0.redisIdentifierKey).inserted }.sorted()
+    }
     var firstFailure: Date? { jobs.compactMap(\.finishedOn).min() }
     var lastFailure: Date? { jobs.compactMap(\.finishedOn).max() }
 
