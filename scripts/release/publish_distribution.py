@@ -20,7 +20,7 @@ import tempfile
 import time
 from html.parser import HTMLParser
 from urllib.error import URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPOSITORY = "raynirola/queuescope"
@@ -164,6 +164,8 @@ class GitHub:
 
     def commit_changes(self, head: str, tree_sha: str, entries: dict,
                        changes: dict[str, str], message: str) -> str:
+        if self.prefix != f"repos/{TAP_REPOSITORY}":
+            raise PublishError("Direct main updates are restricted to the Homebrew tap; QueueScope metadata requires pull-request review")
         if not changes:
             self.assert_head(head)
             return head
@@ -183,6 +185,80 @@ class GitHub:
             raise PublishError("GitHub returned an unexpected branch update; inspect main before rerunning")
         print(f"Published {len(changes)} metadata file(s): {commit['sha']}", flush=True)
         return commit["sha"]
+
+
+    def propose_distribution_changes(self, head: str, tree_sha: str, entries: dict,
+                                     changes: dict[str, str], version: str) -> str:
+        """Prepare a bounded review branch; never write main or create/merge a PR."""
+        if self.prefix != f"repos/{REPOSITORY}":
+            raise PublishError("Distribution review branches belong only in the QueueScope repository")
+        version_tuple(version)
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise PublishError("Review branch requires the full current main commit SHA")
+        if not changes:
+            raise PublishError("No distribution changes need a review branch")
+        for path in changes:
+            parts = PurePosixPath(path).parts
+            allowed = path == MIRROR_PATH or (
+                len(parts) > 1 and parts[0] == "site" and path.endswith(".html")
+                and ".." not in parts and not PurePosixPath(path).is_absolute())
+            if (not allowed or path not in entries or entries[path].get("type") != "blob"
+                    or entries[path].get("mode") not in {"100644", "100755"}):
+                raise PublishError(f"Unexpected distribution review file: {path}")
+        # Including the complete base SHA avoids collisions or silently rebasing
+        # an existing review branch when main advances between release reruns.
+        branch = f"release/distribution-v{version}-{head}"
+        ref_name = f"refs/heads/{branch}"
+        endpoint = "git/matching-refs/heads/" + quote(branch, safe="")
+
+        def branch_tip():
+            refs = self.api(endpoint)
+            if not isinstance(refs, list) or any(not isinstance(ref, dict) for ref in refs):
+                raise PublishError("Unexpected review branch lookup response")
+            matches = [ref for ref in refs if ref.get("ref") == ref_name]
+            if len(matches) > 1:
+                raise PublishError("Ambiguous distribution review branch")
+            if not matches:
+                return None
+            value = matches[0].get("object", {})
+            if not isinstance(value, dict):
+                raise PublishError("Unexpected distribution review branch target")
+            sha = value.get("sha", "")
+            if value.get("type") != "commit" or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise PublishError("Unexpected distribution review branch target")
+            return sha
+
+        self.assert_head(head)
+        existing = branch_tip()
+        prior = None
+        if existing:
+            prior = self.api(f"git/commits/{existing}")
+            if [parent.get("sha") for parent in prior.get("parents", [])] != [head]:
+                raise PublishError("Existing distribution review branch changed; review it manually, never overwrite it")
+        # Git trees are immutable/content-addressed. Creating this expected tree
+        # also permits exact whole-tree verification on an idempotent rerun.
+        tree = self.api("git/trees", method="POST", data={"base_tree": tree_sha, "tree": [
+            {"path": path, "mode": entries[path]["mode"], "type": "blob", "content": content}
+            for path, content in sorted(changes.items())
+        ]})
+        if existing:
+            if prior.get("tree", {}).get("sha") != tree["sha"] or branch_tip() != existing:
+                raise PublishError("Existing distribution review branch changed; review it manually, never overwrite it")
+            self.assert_head(head)
+            print(f"Reusing matching distribution review branch: {branch}", flush=True)
+            return branch
+        commit = self.api("git/commits", method="POST", data={
+            "message": f"Publish QueueScope {version} download metadata",
+            "tree": tree["sha"], "parents": [head]})
+        self.assert_head(head)
+        # Create-only is atomic: a branch concurrently created by anyone else
+        # causes an error, never a forced update or an overwrite of their work.
+        result = self.api("git/refs", method="POST", data={"ref": ref_name, "sha": commit["sha"]})
+        if result.get("ref") != ref_name or result.get("object", {}).get("sha") != commit["sha"]:
+            raise PublishError("Unexpected review branch creation result; inspect the branch before rerunning")
+        self.assert_head(head)
+        print(f"Prepared distribution review branch: {branch}", flush=True)
+        return branch
 
 
 def required_entry(entries: dict, path: str) -> dict:
@@ -396,10 +472,18 @@ def publish_distribution(manifest: dict, github: GitHub, timeout: int) -> str:
         raise PublishError("Released commit is no longer an ancestor of main; refusing publication")
     changes = distribution_changes(github, entries, manifest)
     verify_public_asset(manifest)
-    result = github.commit_changes(head, tree_sha, entries, changes,
-                                   f"Publish QueueScope {manifest['version']} download metadata")
-    deploy_pages(github, result, manifest["version"], timeout)
-    return result
+    if changes:
+        branch = github.propose_distribution_changes(head, tree_sha, entries, changes, manifest["version"])
+        review_url = f"https://github.com/{REPOSITORY}/compare/main...{quote(branch, safe='')}?expand=1"
+        print(f"Review distribution metadata: {review_url}", flush=True)
+        raise PublishError(
+            "Distribution metadata requires a normal pull request and merge. "
+            f"Open or review {review_url}, merge under the repository's usual review rules, "
+            "then rerun this failed job to verify Pages. The workflow does not create or merge pull requests.")
+    github.assert_head(head)
+    print("Current main already contains the release metadata; verifying Pages", flush=True)
+    deploy_pages(github, head, manifest["version"], timeout)
+    return head
 
 
 def main() -> int:
