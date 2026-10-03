@@ -99,7 +99,7 @@ class CaskTests(unittest.TestCase):
         gh.commit_changes.assert_not_called()
 
     def test_brew_uses_temporary_named_tap_and_all_three_checks(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+        with mock.patch.dict(publication.os.environ, {"HOMEBREW_NO_INSTALL_FROM_API": "1", "GH_TOKEN": "test-only", "GITHUB_TOKEN": "test-only", "HOMEBREW_GITHUB_API_TOKEN": "inherited-write-token"}, clear=True), tempfile.TemporaryDirectory() as directory, mock.patch.object(
                 publication.subprocess, "check_output", return_value=directory + "\n"), mock.patch.object(
                 publication.subprocess, "run") as run:
             publication.validate_brew_cask(CASK)
@@ -108,8 +108,134 @@ class CaskTests(unittest.TestCase):
             for call in run.call_args_list:
                 self.assertNotIn("GH_TOKEN", call.kwargs["env"])
                 self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+                self.assertNotIn("HOMEBREW_GITHUB_API_TOKEN", call.kwargs["env"])
+                self.assertNotIn("HOMEBREW_NO_INSTALL_FROM_API", call.kwargs["env"])
+                self.assertEqual(call.kwargs["env"]["HOMEBREW_DEVELOPER"], "1")
+                self.assertEqual(call.kwargs["env"]["HOMEBREW_NO_AUTO_UPDATE"], "1")
+                self.assertEqual(call.kwargs["env"]["HOMEBREW_NO_ANALYTICS"], "1")
             self.assertTrue(all(command[-1].startswith("queuescope/release-verification-") for command in calls))
             self.assertEqual(list((Path(directory) / "Library/Taps/queuescope").iterdir()), [])
+            self.assertEqual(publication.os.environ["HOMEBREW_NO_INSTALL_FROM_API"], "1")
+
+
+class ReadOnlyCaskTests(unittest.TestCase):
+    def tap_github(self, content=CASK):
+        gh = mock.Mock(spec=publication.GitHub)
+        gh.snapshot.return_value = (HEAD, "tree", {publication.CASK_PATH: entry(publication.CASK_PATH)})
+        gh.text.return_value = content
+        gh.commit_changes.return_value = "new-commit"
+        return gh
+
+    def proposed_digest(self):
+        updated = publication.updated_cask(CASK, VERSION, CHECKSUM)
+        return hashlib.sha256(updated.encode("utf-8")).hexdigest()
+
+    def test_matching_digest_skips_brew_but_still_verifies_asset(self):
+        gh = self.tap_github()
+        with mock.patch.dict(publication.os.environ, {"BREW_VALIDATED_CASK_SHA256": self.proposed_digest()}, clear=True), mock.patch.object(
+                publication, "verify_public_asset") as asset, mock.patch.object(publication, "validate_brew_cask") as brew:
+            self.assertEqual(publication.publish_tap(MANIFEST, gh), "new-commit")
+        asset.assert_called_once_with(MANIFEST)
+        brew.assert_not_called()
+        gh.commit_changes.assert_called_once()
+
+    def test_same_digest_never_bypasses_failed_asset_verification(self):
+        gh = self.tap_github()
+        with mock.patch.dict(publication.os.environ, {"BREW_VALIDATED_CASK_SHA256": self.proposed_digest()}, clear=True), mock.patch.object(
+                publication, "verify_public_asset", side_effect=publication.PublishError("bad ZIP")):
+            with self.assertRaisesRegex(publication.PublishError, "bad ZIP"):
+                publication.publish_tap(MANIFEST, gh)
+        gh.commit_changes.assert_not_called()
+
+    def test_changed_live_cask_rejects_prior_digest_before_commit(self):
+        gh = self.tap_github(CASK.replace('desc "Dashboard for BullMQ queues"', 'desc "Updated description"'))
+        with mock.patch.dict(publication.os.environ, {"BREW_VALIDATED_CASK_SHA256": self.proposed_digest()}, clear=True), mock.patch.object(
+                publication, "verify_public_asset") as asset, mock.patch.object(publication, "validate_brew_cask") as brew:
+            with self.assertRaisesRegex(publication.PublishError, "differs from the validated cask"):
+                publication.publish_tap(MANIFEST, gh)
+        gh.commit_changes.assert_not_called()
+        asset.assert_not_called()
+        brew.assert_not_called()
+
+    def test_malformed_or_wrong_digest_cannot_fall_back_to_brew(self):
+        for digest in ("", "A" * 64, "a" * 63, "a" * 64 + "\n", "0" * 64):
+            gh = self.tap_github()
+            with self.subTest(digest=digest), mock.patch.dict(publication.os.environ, {"BREW_VALIDATED_CASK_SHA256": digest}, clear=True), mock.patch.object(
+                    publication, "validate_brew_cask") as brew:
+                with self.assertRaises(publication.PublishError):
+                    publication.publish_tap(MANIFEST, gh)
+                brew.assert_not_called()
+                gh.commit_changes.assert_not_called()
+
+    def test_anonymous_public_cask_validation_is_bounded_and_reports_exact_digest(self):
+        response = io.BytesIO(CASK.encode("utf-8"))
+        response.read = mock.Mock(wraps=response.read)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-output"
+            output.write_text("existing=value\n")
+            with mock.patch.dict(publication.os.environ, {"GITHUB_OUTPUT": str(output)}, clear=True), mock.patch.object(
+                    publication, "public_request", return_value=response) as request, mock.patch.object(
+                    publication, "verify_public_asset") as asset, mock.patch.object(publication, "validate_brew_cask") as brew:
+                digest = publication.validate_public_cask(MANIFEST)
+            self.assertEqual(output.read_text(), f"existing=value\ncask_sha256={digest}\n")
+        self.assertEqual(digest, self.proposed_digest())
+        request.assert_called_once_with("https://raw.githubusercontent.com/raynirola/homebrew-tap/main/Casks/queuescope.rb")
+        response.read.assert_called_once_with(64 * 1024 + 1)
+        asset.assert_called_once_with(MANIFEST)
+        brew.assert_called_once_with(publication.updated_cask(CASK, VERSION, CHECKSUM))
+
+    def test_oversized_public_cask_cannot_reach_brew(self):
+        with mock.patch.object(publication, "public_request", return_value=io.BytesIO(b"x" * (64 * 1024 + 1))), mock.patch.object(
+                publication, "verify_public_asset") as asset, mock.patch.object(publication, "validate_brew_cask") as brew:
+            with self.assertRaisesRegex(publication.PublishError, "64 KiB"):
+                publication.validate_public_cask(MANIFEST)
+        asset.assert_not_called()
+        brew.assert_not_called()
+
+    def test_public_requests_have_no_auth_and_reject_plain_http_or_redirects(self):
+        with mock.patch.object(publication, "build_opener") as opener, mock.patch.dict(
+                publication.os.environ, {"GH_TOKEN": "write-token", "GITHUB_TOKEN": "another-write-token"}):
+            publication.public_request(publication.PUBLIC_TAP_CASK)
+            request = opener.return_value.open.call_args.args[0]
+            self.assertEqual(request.full_url, publication.PUBLIC_TAP_CASK)
+            self.assertIsNone(request.get_header("Authorization"))
+            with self.assertRaisesRegex(publication.PublishError, "requires HTTPS"):
+                publication.public_request("http://raw.githubusercontent.com/example")
+            with self.assertRaisesRegex(publication.PublishError, "insecure"):
+                publication.HTTPSRedirectsOnly().redirect_request(None, None, 302, None, {}, "http://example.com/")
+
+    def test_validation_cli_needs_no_gh_token_or_github_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text(json.dumps(MANIFEST))
+            with mock.patch.dict(publication.os.environ, {"RELEASE_VERSION": VERSION, "RELEASE_COMMIT": COMMIT}, clear=True), mock.patch.object(
+                    sys, "argv", ["publish_distribution.py", "--validate-cask", "--manifest", str(manifest)]), mock.patch.object(
+                    publication, "validate_public_cask") as validate, mock.patch.object(publication, "GitHub") as github:
+                self.assertEqual(publication.main(), 0)
+        validate.assert_called_once_with(MANIFEST)
+        github.assert_not_called()
+
+    def test_validation_and_tap_modes_are_mutually_exclusive(self):
+        with mock.patch.object(sys, "argv", ["publish_distribution.py", "--validate-cask", "--tap"]), mock.patch.object(
+                sys, "stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as error:
+                publication.main()
+        self.assertEqual(error.exception.code, 2)
+
+    def test_only_explicit_read_only_token_reaches_brew_without_mutating_parent_env(self):
+        values = {"GH_TOKEN": "write-token", "GITHUB_TOKEN": "write-token-2", "HOMEBREW_GITHUB_API_TOKEN": "inherited-write-token",
+                  "BREW_READONLY_GITHUB_TOKEN": "read-only-token", "HOMEBREW_NO_INSTALL_FROM_API": "1"}
+        with mock.patch.dict(publication.os.environ, values, clear=True), tempfile.TemporaryDirectory() as directory, mock.patch.object(
+                publication.subprocess, "check_output", return_value=directory + "\n") as root, mock.patch.object(
+                publication.subprocess, "run") as run:
+            publication.validate_brew_cask(CASK)
+            for call in [root.call_args, *run.call_args_list]:
+                child = call.kwargs["env"]
+                self.assertEqual(child["HOMEBREW_GITHUB_API_TOKEN"], "read-only-token")
+                for key in ("GH_TOKEN", "GITHUB_TOKEN", "BREW_READONLY_GITHUB_TOKEN", "HOMEBREW_NO_INSTALL_FROM_API"):
+                    self.assertNotIn(key, child)
+                self.assertEqual(child["HOMEBREW_DEVELOPER"], "1")
+            self.assertEqual(dict(publication.os.environ), values)
 
 
 class CommitTests(unittest.TestCase):

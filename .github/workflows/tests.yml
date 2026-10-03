@@ -53,3 +53,22 @@ jobs:
         run: |
           npm ci --omit=optional --ignore-scripts --prefix BullMQActionBridge
           npm test --prefix BullMQActionBridge
+
+  distribution:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate current public cask without release credentials or publication
+        env:
+          BREW_READONLY_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "scripts/release")
+          from publish_distribution import validate_brew_cask
+          validate_brew_cask(Path("distribution/Casks/queuescope.rb").read_text())
+          PY
