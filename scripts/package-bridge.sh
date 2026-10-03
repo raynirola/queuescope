@@ -1,6 +1,8 @@
 set -euo pipefail
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Keep the caller's selected Node/npm (including CI setup-node) first. Xcode
+# still gets Homebrew and /usr/local fallbacks when it provides a minimal PATH.
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 if ! command -v npm >/dev/null 2>&1; then
   for npm_candidate in "$HOME"/.nvm/versions/node/*/bin/npm; do
     if [ -x "$npm_candidate" ]; then

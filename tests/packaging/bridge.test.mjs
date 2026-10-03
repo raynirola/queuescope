@@ -39,6 +39,43 @@ async function inspectBundle(directory, bundleRoot = directory) {
   }
 }
 
+test("npm discovery preserves PATH priority and supports Xcode fallbacks", async t => {
+  const work = await mkdtemp(path.join(os.tmpdir(), "queuescope-npm-discovery-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const script = await readFile(path.join(root, "scripts/package-bridge.sh"), "utf8");
+  const discoveryEnd = script.indexOf("\nSOURCE_BRIDGE_DIR=");
+  assert.ok(discoveryEnd > 0, "packaging script must discover npm before preparing the bridge");
+
+  const scenarios = [
+    { name: "existing PATH wins over both fallbacks", available: ["preferred", "homebrew", "local"], expected: "preferred" },
+    { name: "minimal PATH falls back to Homebrew", available: ["homebrew", "local"], expected: "homebrew" },
+    { name: "minimal PATH falls back to usr/local", available: ["local"], expected: "local" },
+  ];
+  for (const { name, available, expected } of scenarios) {
+    await t.test(name, async () => {
+      const fixture = path.join(work, expected);
+      const bins = {};
+      for (const location of ["preferred", "homebrew", "local"]) {
+        bins[location] = path.join(fixture, location);
+        await mkdir(bins[location], { recursive: true });
+        if (available.includes(location)) {
+          await writeFile(path.join(bins[location], "npm"), `#!/bin/sh\nprintf '%s\\n' '${location}'\n`, { mode: 0o755 });
+        }
+      }
+      // Exercise the production lookup unchanged except for relocating its two
+      // system fallback directories into the fixture; never modify system bins.
+      const discovery = script.slice(0, discoveryEnd)
+        .replaceAll("/opt/homebrew/bin", bins.homebrew)
+        .replaceAll("/usr/local/bin", bins.local);
+      const result = await run("/bin/bash", ["-c", `${discovery}\nnpm\n`], {
+        ...process.env, PATH: bins.preferred, HOME: fixture,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stdout.trim(), expected);
+    });
+  }
+});
+
 test("bundle inspection allows only an empty optional scope", async t => {
   const work = await mkdtemp(path.join(os.tmpdir(), "queuescope-bundle-inspection-"));
   t.after(() => rm(work, { recursive: true, force: true }));
@@ -149,7 +186,10 @@ test("app bridge packaging uses its own lock outside the workspace", { timeout: 
   assert.equal(await readFile(path.join(fixture, "package.json"), "utf8"), workspaceManifest);
   assert.equal(await readFile(path.join(fixture, "package-lock.json"), "utf8"), workspaceLock);
   assert.equal(await readFile(path.join(env.TARGET_BUILD_DIR, env.CONTENTS_FOLDER_PATH, "Helpers/node"), "utf8"), "node-packaging-stub");
-  const [installDirectory, ...npmArgs] = (await readFile(env.NPM_CALL_LOG, "utf8")).trim().split("\n");
+  const npmCall = await readFile(env.NPM_CALL_LOG, "utf8").catch(error => {
+    assert.fail(`packaging must invoke the npm wrapper selected by PATH: ${error.message}`);
+  });
+  const [installDirectory, ...npmArgs] = npmCall.trim().split("\n");
   assert.ok(!installDirectory.startsWith(`${fixture}${path.sep}`), "npm install ran inside the workspace");
   assert.deepEqual(npmArgs, ["ci", "--omit=dev", "--omit=optional", "--ignore-scripts", "--workspaces=false"]);
   await assert.rejects(access(installDirectory), { code: "ENOENT" });
