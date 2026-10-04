@@ -130,7 +130,7 @@ struct JobTableView: View {
                     ForEach(Array(model.jobs.enumerated()), id: \.element.id) { index, job in
                         RunsRow(
                             job: job,
-                            isSelected: model.selectedJob?.id == job.id && model.selectedJob?.queueName == job.queueName,
+                            isSelected: model.selectedJob?.id == job.id && model.selectedJob?.queueName.redisIdentifierKey == job.queueName.redisIdentifierKey,
                             isChecked: model.isJobSelectedForBulk(job),
                             isAlternate: index.isMultiple(of: 2),
                             stateColor: stateColor(job.state),

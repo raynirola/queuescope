@@ -167,7 +167,7 @@ struct BullMQMutationClient: Sendable {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         return repoRoot
-            .appendingPathComponent("BullMQActionBridge")
+            .appendingPathComponent("packages/action-bridge")
             .appendingPathComponent("bridge.mjs")
             .path
     }

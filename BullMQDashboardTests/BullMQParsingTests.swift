@@ -16,6 +16,58 @@ final class BullMQParsingTests: XCTestCase {
         XCTAssertEqual(BullMQParsing.jobKey(prefix: "bull", queue: "email", jobID: "123"), "bull:email:123")
     }
 
+    func testJobReferenceIdentityUsesExactBytesForEveryComponent() {
+        let composed = "caf\u{e9}"
+        let decomposed = "cafe\u{301}"
+        let original = JobReference(prefix: composed, queue: composed, jobID: composed)
+        let variants = [
+            JobReference(prefix: decomposed, queue: composed, jobID: composed),
+            JobReference(prefix: composed, queue: decomposed, jobID: composed),
+            JobReference(prefix: composed, queue: composed, jobID: decomposed)
+        ]
+        for variant in variants {
+            XCTAssertNotEqual(original, variant)
+            XCTAssertNotEqual(original.id, variant.id)
+            XCTAssertEqual(Set([original, variant]).count, 2)
+            XCTAssertNotEqual(Array(original.redisKey.utf8), Array(variant.redisKey.utf8))
+            XCTAssertTrue(variant.id.utf8.allSatisfy { $0 < 128 })
+        }
+        let copy = JobReference(prefix: composed, queue: composed, jobID: composed)
+        XCTAssertEqual(original, copy)
+        XCTAssertEqual(original.hashValue, copy.hashValue)
+        XCTAssertEqual(Array(original.redisKey.utf8), Array("\(composed):\(composed):\(composed)".utf8))
+        XCTAssertEqual(Array(variants[1].redisKey.utf8), Array("\(composed):\(decomposed):\(composed)".utf8))
+        XCTAssertEqual(JobFlowNode(reference: variants[1], name: "Job", state: nil, depth: 0).id, variants[1].id)
+    }
+
+    func testJobReferenceIdentityKeepsComponentBoundaries() {
+        let first = JobReference(prefix: "prod:bull", queue: "email", jobID: "job:1")
+        let second = JobReference(prefix: "prod", queue: "bull", jobID: "email:job:1")
+        XCTAssertEqual(first.redisKey, second.redisKey)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testJobReferenceParsesColonContainingPrefixAndPreservesUnicodeBytes() throws {
+        let prefix = "prod:caf\u{e9}"
+        let queue = "cafe\u{301}"
+        let key = "\(prefix):\(queue):job:1"
+        let reference = try XCTUnwrap(JobReference(key: key, preferredPrefix: prefix))
+        XCTAssertEqual(reference, JobReference(prefix: prefix, queue: queue, jobID: "job:1"))
+        XCTAssertEqual(Array(reference.redisKey.utf8), Array(key.utf8))
+        XCTAssertEqual(Array(reference.queue.utf8), Array(queue.utf8))
+
+        let otherKey = "cafe\u{301}:email:job"
+        let other = try XCTUnwrap(JobReference(key: otherKey, preferredPrefix: "caf\u{e9}"))
+        XCTAssertEqual(Array(other.prefix.utf8), Array("cafe\u{301}".utf8))
+        XCTAssertEqual(Array(other.redisKey.utf8), Array(otherKey.utf8))
+
+        let combiningQueue = try XCTUnwrap(JobReference(key: "bull:\u{301}queue:job", preferredPrefix: "bull"))
+        XCTAssertEqual(Array(combiningQueue.queue.utf8), Array("\u{301}queue".utf8))
+        XCTAssertNil(JobReference(key: "bull::job", preferredPrefix: "bull"))
+        XCTAssertNil(JobReference(key: "bull:email:", preferredPrefix: "bull"))
+    }
+
     func testPrettyPrintsJSONAndFallsBackToRaw() {
         let json = BullMQParsing.displayValue(#"{"b":2,"a":1}"#)
         XCTAssertTrue(json.text.contains("\"a\""))
@@ -281,6 +333,36 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertNil(model.lastError)
     }
 
+    func testForeignCanonicallyEquivalentPrefixKeepsInspectorActionsReadOnly() async {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        let activePrefix = "café"
+        let foreignPrefix = "cafe\u{301}"
+        model.prefix = activePrefix
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: activePrefix, counts: .empty, health: .healthy)
+        let failed = makeJob(id: "1", queueName: "email", state: .failed)
+        let delayed = makeJob(id: "2", queueName: "email", state: .delayed)
+        engine.foundJob = failed
+
+        await model.inspectJob(JobReference(prefix: foreignPrefix, queue: "email", jobID: "1"))
+        XCTAssertNotNil(model.selectedJobDetail)
+        XCTAssertFalse(model.isReadOnly)
+        XCTAssertFalse(model.canWrite)
+        await model.retryJob(failed)
+        await model.removeJob(failed)
+        await model.promoteJob(delayed)
+        XCTAssertTrue(engine.retryCalls.isEmpty)
+        XCTAssertTrue(engine.removeCalls.isEmpty)
+        XCTAssertTrue(engine.promoteCalls.isEmpty)
+
+        await model.inspectJob(JobReference(prefix: activePrefix, queue: "email", jobID: "1"))
+        XCTAssertTrue(model.canWrite)
+        await model.retryJob(failed)
+        XCTAssertEqual(engine.retryCalls.map(\.jobID), ["1"])
+        await model.disconnect()
+    }
+
     func testInspectorIdentityDistinguishesEqualJobIDsAcrossQueues() async {
         let engine = FakeBullMQEngine()
         let model = makeModel(engine: engine)
@@ -418,7 +500,7 @@ final class AppModelRefreshTests: XCTestCase {
         var new = first; new.id = "2"
         engine.failedJobsByQueue["email"]?.append(new)
         await model.scanFailures()
-        XCTAssertEqual(model.newlyObservedFailures, ["email:2"])
+        XCTAssertEqual(model.newlyObservedFailures, ["\("email".redisIdentifierKey):2"])
         await model.disconnect()
         XCTAssertTrue(model.failureJobs.isEmpty)
         XCTAssertNil(model.failureScanDate)

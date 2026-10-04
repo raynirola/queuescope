@@ -37,7 +37,7 @@ final class AppModel: ObservableObject {
     @Published var selectedQueue: QueueSummary? {
         didSet {
             guard !failureInboxAllQueues,
-                  oldValue?.name != selectedQueue?.name || oldValue?.prefix != selectedQueue?.prefix else { return }
+                  oldValue?.id != selectedQueue?.id else { return }
             resetFailureScan()
             if selectedView == .failures { scheduleRefresh(for: .failures) }
         }
@@ -110,7 +110,7 @@ final class AppModel: ObservableObject {
     func scanFailures(restart: Bool = true) async {
         guard isConnected, !isScanningFailures else { return }
         if restart {
-            if failureScanDate != nil, !failureScanHasMore, failureScanError == nil { previousFailureIDs = Set(failureJobs.map { "\($0.queueName):\($0.id)" }) }
+            if failureScanDate != nil, !failureScanHasMore, failureScanError == nil { previousFailureIDs = Set(failureJobs.map { "\($0.queueName.redisIdentifierKey):\($0.id)" }) }
             failureJobs = []
             newlyObservedFailures = []
             failureQueuesCompleted = 0
@@ -118,7 +118,7 @@ final class AppModel: ObservableObject {
             if !failureInboxAllQueues, let selectedQueue {
                 failureQueueNames = [selectedQueue.name]
             } else {
-                failureQueueNames = Array(Set(queues.map(\.name))).sorted()
+                failureQueueNames = queues.map(\.name).sorted()
             }
             failureScanHasMore = !failureQueueNames.isEmpty
             failureScanDate = Date()
@@ -137,8 +137,8 @@ final class AppModel: ObservableObject {
                 let queue = failureQueueNames[failureQueuesCompleted]
                 let page = try await engine.getJobs(queueName: queue, prefix: scanPrefix, state: .failed, page: failurePage, pageSize: 100)
                 guard generation == connectionGeneration, revision == failureScanRevision else { return }
-                var seen = Set(failureJobs.map { "\($0.queueName):\($0.id)" })
-                let fresh = page.jobs.filter { seen.insert("\($0.queueName):\($0.id)").inserted }
+                var seen = Set(failureJobs.map { "\($0.queueName.redisIdentifierKey):\($0.id)" })
+                let fresh = page.jobs.filter { seen.insert("\($0.queueName.redisIdentifierKey):\($0.id)").inserted }
                 failureJobs.append(contentsOf: fresh)
                 for job in fresh {
                     let signature = FailureGroup.signature(job.failedReason)
@@ -146,7 +146,7 @@ final class AppModel: ObservableObject {
                     failureLastObserved[signature] = Date()
                 }
                 if let previousFailureIDs {
-                    newlyObservedFailures.formUnion(fresh.map { "\($0.queueName):\($0.id)" }.filter { !previousFailureIDs.contains($0) })
+                    newlyObservedFailures.formUnion(fresh.map { "\($0.queueName.redisIdentifierKey):\($0.id)" }.filter { !previousFailureIDs.contains($0) })
                 }
                 failurePage += 1
                 if failurePage * 100 >= page.total || page.jobs.isEmpty {
@@ -176,22 +176,22 @@ final class AppModel: ObservableObject {
     private var selectedJobPrefix: String?
     private var inspectionRequestID = 0
     var isReadOnly: Bool { activeConnection?.isReadOnly ?? false }
-    var canWrite: Bool { (activeConnection == nil || isConnected) && !isReadOnly && (selectedJobPrefix == nil || selectedJobPrefix == activePrefix) }
+    var canWrite: Bool { (activeConnection == nil || isConnected) && !isReadOnly && (selectedJobPrefix == nil || selectedJobPrefix?.redisIdentifierKey == activePrefix.redisIdentifierKey) }
 
     func discoverMoreQueues() async {
         guard isConnected, !isLoading else { return }
         let generation = connectionGeneration
         await runLoading(.overview) {
             var cursor = discoveryCursor
-            var names: Set<String> = []
+            var names: [String: String] = [:]
             for _ in 0..<10 {
                 let page = try await engine.discoverQueues(prefix: activePrefix, cursor: cursor)
                 guard generation == connectionGeneration else { return }
-                names.formUnion(page.names)
+                for name in page.names { names[name.redisIdentifierKey] = name }
                 cursor = page.nextCursor
                 if cursor == "0" { break }
             }
-            for name in names where !queues.contains(where: { $0.name == name }) {
+            for name in names.values where !queues.contains(where: { $0.name.redisIdentifierKey == name.redisIdentifierKey }) {
                 queues.append(QueueSummary(name: name, prefix: activePrefix, counts: .empty, health: .unknown))
             }
             queues.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -611,7 +611,7 @@ final class AppModel: ObservableObject {
             var overview = try await engine.getQueueOverview(queueName: name, prefix: activePrefix)
             guard generation == connectionGeneration else { return }
             overview.displayName = displayName
-            if let index = queues.firstIndex(where: { $0.name == name }) {
+            if let index = queues.firstIndex(where: { $0.name.redisIdentifierKey == name.redisIdentifierKey }) {
                 queues[index] = overview
             } else {
                 queues.append(overview)
@@ -630,24 +630,67 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var canImportQueueCatalog: Bool {
+        isConnected && !isDemo && activeConnection != nil && !activeLoadingPhases.contains(.connecting)
+    }
+
+    func captureQueueCatalogImportTarget() throws -> QueueCatalogImportTarget {
+        guard canImportQueueCatalog, let connection = activeConnection else {
+            throw QueueCatalogError.noConnection
+        }
+        return QueueCatalogImportTarget(
+            connectionGeneration: connectionGeneration,
+            scope: queueScope(for: connection),
+            profileID: connection.profileID,
+            connectionName: connection.name,
+            endpoint: "\(connection.host):\(connection.port)/\(connection.database)",
+            prefix: connection.prefix
+        )
+    }
+
+    /// No suspension points: check the captured workspace, validate every prefix, persist the
+    /// whole merge, then publish. This operation never connects, selects a queue, or calls Redis.
+    @discardableResult
+    func importQueueCatalog(_ catalog: QueueCatalog, target: QueueCatalogImportTarget) throws -> Int {
+        guard let current = try? captureQueueCatalogImportTarget(), current == target else {
+            throw QueueCatalogError.connectionChanged
+        }
+        try catalog.validatePrefix(current.prefix)
+        let merged = catalog.merging(into: queues)
+        let addedCount = merged.count - queues.count
+        if addedCount > 0 {
+            // Metadata is authoritative on reconnect. Avoid a second, partially committed
+            // queue-name write; the legacy names cache is only used when metadata is empty.
+            try queueMetadataStore.saveImportedQueues(merged, scope: current.scope)
+            queues = merged
+        }
+        statusMessage = "Imported \(addedCount) new queues into \(current.connectionName). Existing labels and groups were preserved."
+        return addedCount
+    }
+
+    @discardableResult
+    func importQueueCatalog(data: Data, target: QueueCatalogImportTarget) throws -> Int {
+        try importQueueCatalog(QueueCatalog.decode(data), target: target)
+    }
+
     func removeQueue(_ queue: QueueSummary) {
         removeQueue(named: queue.name)
     }
 
     func removeQueue(named queueName: String) {
-        guard queues.contains(where: { $0.name == queueName }) else { return }
+        guard queues.contains(where: { $0.name.redisIdentifierKey == queueName.redisIdentifierKey }) else { return }
         let queueCacheKey = cacheKey(queueName)
-        queues.removeAll { $0.name == queueName }
+        queues.removeAll { $0.name.redisIdentifierKey == queueName.redisIdentifierKey }
 
         jobsByQuery = jobsByQuery.filter { query, _ in !query.hasPrefix("\(queueCacheKey):runs:") }
         runTotalsByQuery = runTotalsByQuery.filter { query, _ in !query.hasPrefix("\(queueCacheKey):runs:") }
         workersByQueue[queueCacheKey] = nil
         schedulersByQueue[queueCacheKey] = nil
         metricTimingJobsByQueue[queueCacheKey] = nil
-        lastSnapshotCountsByQueue[queueName] = nil
-        lastSnapshotNativeMetricsByQueue[queueName] = nil
+        lastSnapshotCountsByQueue[queueName.redisIdentifierKey] = nil
+        lastSnapshotNativeMetricsByQueue[queueName.redisIdentifierKey] = nil
 
-        if selectedQueue?.name == queueName {
+        if selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey {
             selectedQueue = queues.first
             selectedState = nil
             resetSelectedJob()
@@ -675,9 +718,9 @@ final class AppModel: ObservableObject {
 
     func assignQueue(named queueName: String, toGroup rawGroupName: String?) {
         let groupName = normalizedQueueGroupName(rawGroupName)
-        guard let index = queues.firstIndex(where: { $0.name == queueName }) else { return }
+        guard let index = queues.firstIndex(where: { $0.name.redisIdentifierKey == queueName.redisIdentifierKey }) else { return }
         queues[index].groupName = groupName
-        if selectedQueue?.name == queueName {
+        if selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey {
             selectedQueue = queues[index]
         }
         persistCurrentQueueMetadata()
@@ -685,15 +728,15 @@ final class AppModel: ObservableObject {
 
     func assignQueues(named queueNames: [String], toGroup rawGroupName: String?) {
         let groupName = normalizedQueueGroupName(rawGroupName)
-        let queueNameSet = Set(queueNames)
+        let queueNameSet = Set(queueNames.map(\.redisIdentifierKey))
         guard !queueNameSet.isEmpty else { return }
         var changed = false
-        for index in queues.indices where queueNameSet.contains(queues[index].name) {
+        for index in queues.indices where queueNameSet.contains(queues[index].name.redisIdentifierKey) {
             queues[index].groupName = groupName
             changed = true
         }
-        if let selectedQueue, queueNameSet.contains(selectedQueue.name),
-           let updatedQueue = queues.first(where: { $0.name == selectedQueue.name }) {
+        if let selectedQueue, queueNameSet.contains(selectedQueue.name.redisIdentifierKey),
+           let updatedQueue = queues.first(where: { $0.id == selectedQueue.id }) {
             self.selectedQueue = updatedQueue
         }
         if changed {
@@ -1072,7 +1115,7 @@ final class AppModel: ObservableObject {
             state: selectedJob.state
         )
         try Task.checkCancellation()
-        guard inspection == inspectionRequestID, self.selectedJob?.id == jobID, self.selectedJob?.queueName == selectedJob.queueName else { return }
+        guard inspection == inspectionRequestID, self.selectedJob?.id == jobID, self.selectedJob?.queueName.redisIdentifierKey == selectedJob.queueName.redisIdentifierKey else { return }
         selectedJobDetail = detail
     }
 
@@ -1129,7 +1172,7 @@ final class AppModel: ObservableObject {
                 limit: jobLogPageSize
             )
             try Task.checkCancellation()
-            guard inspection == inspectionRequestID, self.selectedJob?.id == jobID, self.selectedJob?.queueName == selectedJob.queueName else { return }
+            guard inspection == inspectionRequestID, self.selectedJob?.id == jobID, self.selectedJob?.queueName.redisIdentifierKey == selectedJob.queueName.redisIdentifierKey else { return }
             let mergedLogs = mergeLogs(selectedJobLogs, with: logs)
             if mergedLogs != selectedJobLogs {
                 selectedJobLogs = mergedLogs
@@ -1159,7 +1202,7 @@ final class AppModel: ObservableObject {
                 limit: firstLogID - start - 1
             )
             try Task.checkCancellation()
-            guard inspection == inspectionRequestID, self.selectedJob?.id == jobID, self.selectedJob?.queueName == selectedJob.queueName else { return }
+            guard inspection == inspectionRequestID, self.selectedJob?.id == jobID, self.selectedJob?.queueName.redisIdentifierKey == selectedJob.queueName.redisIdentifierKey else { return }
             let mergedLogs = mergeLogs(selectedJobLogs, with: logs)
             if mergedLogs != selectedJobLogs {
                 selectedJobLogs = mergedLogs
@@ -1287,9 +1330,9 @@ final class AppModel: ObservableObject {
         do {
             try await refreshRunsAfterMutation(queueName: queueName)
             selectedJobIDs.subtract(succeededIDs)
-            if clearsSelectedJob, let selectedJob, selectedJob.queueName == queueName, succeededIDs.contains(selectedJob.id) {
+            if clearsSelectedJob, let selectedJob, selectedJob.queueName.redisIdentifierKey == queueName.redisIdentifierKey, succeededIDs.contains(selectedJob.id) {
                 resetSelectedJob()
-            } else if let selectedJob, selectedJob.queueName == queueName, succeededIDs.contains(selectedJob.id) {
+            } else if let selectedJob, selectedJob.queueName.redisIdentifierKey == queueName.redisIdentifierKey, succeededIDs.contains(selectedJob.id) {
                 try await reloadSelectedJobAfterMutation()
             }
 
@@ -1312,10 +1355,10 @@ final class AppModel: ObservableObject {
     private func refreshRunsAfterMutation(queueName: String) async throws {
         let overview = try await engine.getQueueOverview(queueName: queueName, prefix: activePrefix)
         var updatedOverview = overview
-        updatedOverview.displayName = selectedQueue?.name == queueName ? selectedQueue?.displayName : overview.displayName
-        updatedOverview.groupName = selectedQueue?.name == queueName ? selectedQueue?.groupName : overview.groupName
+        updatedOverview.displayName = selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey ? selectedQueue?.displayName : overview.displayName
+        updatedOverview.groupName = selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey ? selectedQueue?.groupName : overview.groupName
         replaceQueue(updatedOverview)
-        if selectedQueue?.name == queueName {
+        if selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey {
             selectedQueue = updatedOverview
         }
         persistCurrentQueueMetadata()
@@ -1324,7 +1367,7 @@ final class AppModel: ObservableObject {
         let queryKey = runCacheKey(queueName)
         jobsByQuery[queryKey] = loadedPage.jobs
         runTotalsByQuery[queryKey] = loadedPage.total
-        if selectedQueue?.name == queueName {
+        if selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey {
             jobs = loadedPage.jobs
             runTotal = loadedPage.total
             pruneSelectedJobSelection()
@@ -1465,7 +1508,7 @@ final class AppModel: ObservableObject {
 
     private func replaceQueue(_ queue: QueueSummary) {
         var queue = queue
-        if let index = queues.firstIndex(where: { $0.name == queue.name }) {
+        if let index = queues.firstIndex(where: { $0.id == queue.id }) {
             queue.displayName = queue.displayName ?? queues[index].displayName
             queue.groupName = queue.groupName ?? queues[index].groupName
             queues[index] = queue
@@ -1496,7 +1539,7 @@ final class AppModel: ObservableObject {
             queues = cachedQueues
         }
         if let selectedQueueName = preference?.selectedQueueName,
-           let restoredQueue = queues.first(where: { $0.name == selectedQueueName }) {
+           let restoredQueue = queues.first(where: { $0.name.redisIdentifierKey == selectedQueueName.redisIdentifierKey }) {
             selectedQueue = restoredQueue
             selectedState = nil
         } else if selectedQueue == nil {
@@ -1594,7 +1637,7 @@ final class AppModel: ObservableObject {
     }
 
     private func cacheKey(_ queueName: String) -> String {
-        "\(activePrefix):\(queueName)"
+        "\(activePrefix.redisIdentifierKey):\(queueName.redisIdentifierKey)"
     }
 
     private func runCacheKey(_ queueName: String) -> String {
@@ -1620,8 +1663,8 @@ final class AppModel: ObservableObject {
 
     private func recordSnapshot(queueName: String, counts: QueueCounts, nativeMetrics: BullMQNativeMetrics? = nil) throws {
         guard let config = activeConnection else { return }
-        let previousNativeMetrics = lastSnapshotNativeMetricsByQueue[queueName]
-        guard lastSnapshotCountsByQueue[queueName] != counts || previousNativeMetrics != nativeMetrics else { return }
+        let previousNativeMetrics = lastSnapshotNativeMetricsByQueue[queueName.redisIdentifierKey]
+        guard lastSnapshotCountsByQueue[queueName.redisIdentifierKey] != counts || previousNativeMetrics != nativeMetrics else { return }
         let snapshot = QueueMetricSnapshot(
             connectionScope: queueScope(for: config),
             queueName: queueName,
@@ -1631,8 +1674,8 @@ final class AppModel: ObservableObject {
         )
         try snapshotStore.append(snapshot)
         snapshots = try snapshotStore.load(scope: queueScope(for: config))
-        lastSnapshotCountsByQueue[queueName] = counts
-        lastSnapshotNativeMetricsByQueue[queueName] = nativeMetrics
+        lastSnapshotCountsByQueue[queueName.redisIdentifierKey] = counts
+        lastSnapshotNativeMetricsByQueue[queueName.redisIdentifierKey] = nativeMetrics
     }
 
     private func resetFailureScan() {
@@ -1676,7 +1719,7 @@ final class AppModel: ObservableObject {
     }
 
     private func isCurrentRefresh(_ requestID: Int, queueName: String) -> Bool {
-        refreshRequestID == requestID && selectedQueue?.name == queueName
+        refreshRequestID == requestID && selectedQueue?.name.redisIdentifierKey == queueName.redisIdentifierKey
     }
 
     private func normalizedManualQueueName(_ rawName: String) -> String {

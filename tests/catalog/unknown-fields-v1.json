@@ -1,0 +1,1 @@
+{"schema":"queuescope.queue-catalog","version":1,"queues":[{"name":"emails","prefix":"team:prod","connection":{"host":"example.invalid","password":"fixture-only-not-a-real-password"}}]}

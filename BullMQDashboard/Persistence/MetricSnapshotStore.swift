@@ -15,7 +15,7 @@ final class MetricSnapshotStore {
     }
 
     func load(scope: String) throws -> [QueueMetricSnapshot] {
-        try readSnapshots().filter { $0.connectionScope == scope }
+        try readSnapshots().filter { $0.connectionScope?.redisIdentifierKey == scope.redisIdentifierKey }
     }
 
     func append(_ snapshot: QueueMetricSnapshot) throws {
@@ -25,7 +25,7 @@ final class MetricSnapshotStore {
         var snapshots = try readSnapshots()
         // Native minute buckets are already a history. Keep them only on the latest
         // snapshot for this queue, rather than copying the entire series 120 times.
-        for index in snapshots.indices where snapshots[index].connectionScope == scope && snapshots[index].queueName == snapshot.queueName {
+        for index in snapshots.indices where snapshots[index].connectionScope?.redisIdentifierKey == scope.redisIdentifierKey && snapshots[index].queueName.redisIdentifierKey == snapshot.queueName.redisIdentifierKey {
             snapshots[index].nativeMetrics = nil
         }
         var bounded = snapshot
@@ -39,8 +39,8 @@ final class MetricSnapshotStore {
         var retained: [String: [String: Int]] = [:]
         snapshots = snapshots.filter { item in
             guard let scope = item.connectionScope else { return false }
-            let count = retained[scope]?[item.queueName] ?? 0
-            retained[scope, default: [:]][item.queueName] = count + 1
+            let count = retained[scope.redisIdentifierKey]?[item.queueName.redisIdentifierKey] ?? 0
+            retained[scope.redisIdentifierKey, default: [:]][item.queueName.redisIdentifierKey] = count + 1
             return count < maxSnapshotsPerQueue
         }
         var data = try JSONEncoder().encode(snapshots)

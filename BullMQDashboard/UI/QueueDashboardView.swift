@@ -154,7 +154,7 @@ struct QueueDashboardView: View {
 
     @ViewBuilder
     private func observabilityGrid(_ queue: QueueSummary) -> some View {
-        let hasNativeMetrics = model.snapshots.contains { $0.queueName == queue.name && $0.nativeMetrics?.hasSamples == true }
+        let hasNativeMetrics = model.snapshots.contains { $0.queueName.redisIdentifierKey == queue.name.redisIdentifierKey && $0.nativeMetrics?.hasSamples == true }
         let hasWorkers = !model.workers.isEmpty
         let hasFailures = model.jobs.contains { $0.state == .failed }
         let hasSchedulers = !model.schedulers.isEmpty
@@ -547,7 +547,7 @@ private struct MetricsPanel: View {
 
     private var recentSnapshots: [QueueMetricSnapshot] {
         Array(model.snapshots
-            .filter { $0.queueName == queue.name }
+            .filter { $0.queueName.redisIdentifierKey == queue.name.redisIdentifierKey }
             .sorted { $0.capturedAt < $1.capturedAt }
             .suffix(40))
     }

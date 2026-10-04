@@ -37,6 +37,8 @@
 		110000000000000000000001 /* QueueFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000002; };
 		120000000000000000000001 /* SSHTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000000000000000000002; };
 		120000000000000000000003 /* DemoBullMQEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000000000000000000004; };
+		130000000000000000000001 /* QueueCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 130000000000000000000002 /* QueueCatalog.swift */; };
+		130000000000000000000003 /* QueueCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 130000000000000000000004 /* QueueCatalogTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,6 +83,8 @@
 		110000000000000000000002 /* QueueFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueFeatureViews.swift; sourceTree = "<group>"; };
 		120000000000000000000002 /* SSHTunnel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTunnel.swift; sourceTree = "<group>"; };
 		120000000000000000000004 /* DemoBullMQEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBullMQEngine.swift; sourceTree = "<group>"; };
+		130000000000000000000002 /* QueueCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueCatalog.swift; sourceTree = "<group>"; };
+		130000000000000000000004 /* QueueCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueCatalogTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -165,6 +169,7 @@
 				100000000000000000000207 /* BullMQEngine.swift */,
 				100000000000000000000208 /* BullMQModels.swift */,
 				100000000000000000000209 /* BullMQParsing.swift */,
+				130000000000000000000002 /* QueueCatalog.swift */,
 				100000000000000000000217 /* DisplayFormatting.swift */,
 			);
 			path = Domain;
@@ -200,6 +205,7 @@
 				100000000000000000000212 /* BullMQParsingTests.swift */,
 				100000000000000000000213 /* RedisURLParserTests.swift */,
 				100000000000000000000214 /* RESPParserTests.swift */,
+				130000000000000000000004 /* QueueCatalogTests.swift */,
 			);
 			path = BullMQDashboardTests;
 			sourceTree = "<group>";
@@ -314,9 +320,12 @@
 			files = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/BullMQActionBridge/bridge.mjs",
-				"$(SRCROOT)/BullMQActionBridge/package.json",
-				"$(SRCROOT)/BullMQActionBridge/package-lock.json",
+				"$(SRCROOT)/scripts/package-bridge.sh",
+				"$(SRCROOT)/scripts/prepare-bridge.sh",
+				"$(SRCROOT)/scripts/package-node.sh",
+				"$(SRCROOT)/packages/action-bridge/bridge.mjs",
+				"$(SRCROOT)/packages/action-bridge/package.json",
+				"$(SRCROOT)/packages/action-bridge/package-lock.json",
 			);
 			name = "Package BullMQ action bridge";
 			outputPaths = (
@@ -347,6 +356,7 @@
 				100000000000000000000107 /* BullMQEngine.swift in Sources */,
 				100000000000000000000108 /* BullMQModels.swift in Sources */,
 				100000000000000000000109 /* BullMQParsing.swift in Sources */,
+				130000000000000000000001 /* QueueCatalog.swift in Sources */,
 				100000000000000000000116 /* DisplayFormatting.swift in Sources */,
 				10000000000000000000010A /* ConnectionProfileStore.swift in Sources */,
 				10000000000000000000010C /* MetricSnapshotStore.swift in Sources */,
@@ -368,6 +378,7 @@
 				100000000000000000000112 /* BullMQParsingTests.swift in Sources */,
 				100000000000000000000113 /* RedisURLParserTests.swift in Sources */,
 				100000000000000000000114 /* RESPParserTests.swift in Sources */,
+				130000000000000000000003 /* QueueCatalogTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

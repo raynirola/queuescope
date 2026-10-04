@@ -1,0 +1,1 @@
+{"schema":"queuescope.queue-catalog","version":1,"queues":[{"name":"emails","prefix":"team:prod","displayName":"Outbound email","group":"Messaging"},{"name":"通知📨","prefix":"team:prod","displayName":"通知 🚀","group":"顧客"},{"name":"café","prefix":"team:prod"},{"name":"café","prefix":"team:prod"}]}

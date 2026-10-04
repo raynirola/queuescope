@@ -11,6 +11,11 @@ struct SidebarView: View {
     @State private var queueBeingGrouped: QueueSummary?
     @State private var queueGroupName = ""
     @State private var collapsedGroupNames: Set<String> = []
+    @State private var isCatalogPickerVisible = false
+    @State private var isReadingCatalog = false
+    @State private var isCatalogConfirmationVisible = false
+    @State private var catalogTarget: QueueCatalogImportTarget?
+    @State private var pendingCatalog: QueueCatalog?
     let showConnectionManager: () -> Void
 
     var body: some View {
@@ -33,6 +38,17 @@ struct SidebarView: View {
             queueList
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .fileImporter(isPresented: $isCatalogPickerVisible, allowedContentTypes: [.json]) { result in
+            readCatalog(result)
+        }
+        .alert("Import queue catalog?", isPresented: $isCatalogConfirmationVisible) {
+            Button("Cancel", role: .cancel) { clearCatalogImport() }
+            Button("Import queues") { applyCatalog() }
+        } message: {
+            if let target = catalogTarget, let catalog = pendingCatalog {
+                Text("Add metadata for \(catalog.queues.count) queues to the selected connection \(target.connectionName) (\(target.endpoint)), prefix \(target.prefix)? Every queue must use this prefix. Existing labels and groups are kept. This only updates your local queue list; it does not create a connection, connect to a server, or change Redis data or permissions.")
+            }
+        }
     }
 
     private var queueList: some View {
@@ -66,7 +82,7 @@ struct SidebarView: View {
                                     ForEach(group.queues) { queue in
                                         QueueSidebarRow(
                                             queue: queue,
-                                            isSelected: model.selectedQueue?.name == queue.name,
+                                            isSelected: model.selectedQueue?.id == queue.id,
                                             existingGroups: existingGroupNames,
                                             moveToGroup: { groupName in
                                                 model.assignQueue(queue, toGroup: groupName)
@@ -129,6 +145,24 @@ struct SidebarView: View {
             Spacer()
 
             Button {
+                do {
+                    catalogTarget = try model.captureQueueCatalogImportTarget()
+                    isCatalogPickerVisible = true
+                } catch {
+                    model.lastError = error.localizedDescription
+                }
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(model.canImportQueueCatalog ? .secondary : .tertiary)
+            .disabled(!model.canImportQueueCatalog || isReadingCatalog || isCatalogPickerVisible || isCatalogConfirmationVisible)
+            .help("Import queue catalog into the current connection")
+            .accessibilityLabel("Import queue catalog")
+
+            Button {
                 isGroupManagerVisible = true
             } label: {
                 Image(systemName: "folder.badge.plus")
@@ -173,6 +207,49 @@ struct SidebarView: View {
                 )
             }
         }
+    }
+
+    private func readCatalog(_ result: Result<URL, Error>) {
+        guard let target = catalogTarget else { return }
+        switch result {
+        case .failure(let error):
+            clearCatalogImport()
+            if (error as NSError).code != NSUserCancelledError {
+                model.lastError = error.localizedDescription
+            }
+        case .success(let url):
+            isReadingCatalog = true
+            Task { @MainActor in
+                defer { isReadingCatalog = false }
+                do {
+                    let catalog = try await Task.detached(priority: .userInitiated) {
+                        try QueueCatalog.read(from: url)
+                    }.value
+                    guard let current = try? model.captureQueueCatalogImportTarget(), current == target else {
+                        throw QueueCatalogError.connectionChanged
+                    }
+                    try catalog.validatePrefix(target.prefix)
+                    pendingCatalog = catalog
+                    isCatalogConfirmationVisible = true
+                } catch {
+                    clearCatalogImport()
+                    model.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func applyCatalog() {
+        defer { clearCatalogImport() }
+        guard let target = catalogTarget, let catalog = pendingCatalog else { return }
+        do { try model.importQueueCatalog(catalog, target: target) }
+        catch { model.lastError = error.localizedDescription }
+    }
+
+    private func clearCatalogImport() {
+        catalogTarget = nil
+        pendingCatalog = nil
+        isCatalogConfirmationVisible = false
     }
 
     private var sidebarHeader: some View {
@@ -1101,7 +1178,7 @@ struct QueueGroupManagementPopover: View {
     let createGroup: ([String], String) -> Void
     let ungroupQueues: ([String]) -> Void
     @State private var groupName = ""
-    @State private var selectedQueueNames: Set<String> = []
+    @State private var selectedQueueIDs: Set<String> = []
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -1134,7 +1211,7 @@ struct QueueGroupManagementPopover: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(queues.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { queue in
-                                Toggle(isOn: binding(for: queue.name)) {
+                                Toggle(isOn: binding(for: queue.id)) {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(queue.resolvedDisplayName)
                                             .font(.caption.weight(.medium))
@@ -1164,7 +1241,7 @@ struct QueueGroupManagementPopover: View {
                                 HStack(spacing: 8) {
                                     Button(group) {
                                         groupName = group
-                                        selectedQueueNames = Set(queues.filter { $0.resolvedGroupName == group }.map(\.name))
+                                        selectedQueueIDs = Set(queues.filter { $0.resolvedGroupName == group }.map(\.id))
                                     }
                                     .buttonStyle(.borderless)
                                     .font(.caption.weight(.medium))
@@ -1186,7 +1263,7 @@ struct QueueGroupManagementPopover: View {
                 HStack {
                     Button("Reset") {
                         groupName = ""
-                        selectedQueueNames = []
+                        selectedQueueIDs = []
                     }
                     .buttonStyle(.borderless)
 
@@ -1194,7 +1271,7 @@ struct QueueGroupManagementPopover: View {
 
                     Button("Create", action: createIfValid)
                         .buttonStyle(.borderedProminent)
-                        .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedQueueNames.isEmpty)
+                        .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedQueueIDs.isEmpty)
                 }
             }
             .padding(16)
@@ -1203,20 +1280,20 @@ struct QueueGroupManagementPopover: View {
         .frame(maxHeight: 540)
         .onAppear {
             isFocused = true
-            if selectedQueueNames.isEmpty, let firstUngrouped = queues.first(where: { $0.groupName == nil }) {
-                selectedQueueNames = [firstUngrouped.name]
+            if selectedQueueIDs.isEmpty, let firstUngrouped = queues.first(where: { $0.groupName == nil }) {
+                selectedQueueIDs = [firstUngrouped.id]
             }
         }
     }
 
-    private func binding(for queueName: String) -> Binding<Bool> {
+    private func binding(for queueID: String) -> Binding<Bool> {
         Binding(
-            get: { selectedQueueNames.contains(queueName) },
+            get: { selectedQueueIDs.contains(queueID) },
             set: { isSelected in
                 if isSelected {
-                    selectedQueueNames.insert(queueName)
+                    selectedQueueIDs.insert(queueID)
                 } else {
-                    selectedQueueNames.remove(queueName)
+                    selectedQueueIDs.remove(queueID)
                 }
             }
         )
@@ -1224,8 +1301,8 @@ struct QueueGroupManagementPopover: View {
 
     private func createIfValid() {
         let trimmedGroupName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedGroupName.isEmpty, !selectedQueueNames.isEmpty else { return }
-        createGroup(Array(selectedQueueNames), trimmedGroupName)
+        guard !trimmedGroupName.isEmpty, !selectedQueueIDs.isEmpty else { return }
+        createGroup(queues.filter { selectedQueueIDs.contains($0.id) }.map(\.name), trimmedGroupName)
     }
 }
 

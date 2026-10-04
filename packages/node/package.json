@@ -1,0 +1,29 @@
+{
+  "name": "@queuescope/node",
+  "version": "0.1.0",
+  "description": "Credential-free, explicit BullMQ queue catalogs for QueueScope",
+  "type": "module",
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  }
+}

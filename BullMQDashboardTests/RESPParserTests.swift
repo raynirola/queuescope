@@ -108,7 +108,7 @@ final class RedisTransportTests: XCTestCase {
     func testFeaturesAgainstOfficialBullMQFixture() async throws {
         try await withRedis(commandTimeout: 5) { client, config in
             let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            let fixture = root.appendingPathComponent("BullMQActionBridge/feature-fixture.mjs")
+            let fixture = root.appendingPathComponent("packages/action-bridge/feature-fixture.mjs")
             let node = try XCTUnwrap(BullMQMutationClient.defaultNodePath())
             let process = Process()
             let input = Pipe()
@@ -201,6 +201,54 @@ final class RedisTransportTests: XCTestCase {
                 } catch { XCTAssertTrue(error.localizedDescription.contains("read-only")) }
                 let stillRunning = try await engine.getQueueOverview(queueName: "feature-jobs", prefix: "bull")
                 XCTAssertFalse(stillRunning.isPaused)
+            } catch { await engine.disconnect(); throw error }
+            await engine.disconnect()
+        }
+    }
+
+    func testJobFlowsKeepCanonicallyEquivalentQueueNamesDistinct() async throws {
+        try await withRedis(commandTimeout: 5) { client, config in
+            let prefix = "prod:bull"
+            let root = JobReference(prefix: prefix, queue: "flow-root", jobID: "root")
+            let composed = JobReference(prefix: prefix, queue: "caf\u{e9}", jobID: "child")
+            let decomposed = JobReference(prefix: prefix, queue: "cafe\u{301}", jobID: "child")
+            let ancestor = JobReference(prefix: prefix, queue: composed.queue, jobID: "chain")
+            let descendant = JobReference(prefix: prefix, queue: decomposed.queue, jobID: "chain")
+            _ = try await client.commands([
+                ["HSET", root.redisKey, "name", "Root"],
+                ["HSET", composed.redisKey, "name", "Composed child", "parentKey", root.redisKey],
+                ["HSET", decomposed.redisKey, "name", "Decomposed child", "parentKey", root.redisKey],
+                ["SADD", "\(root.redisKey):dependencies", composed.redisKey, decomposed.redisKey],
+                ["HSET", "\(root.redisKey):processed", composed.redisKey, "{}"],
+                ["HSET", "\(root.redisKey):failed", decomposed.redisKey, "failure"],
+                ["ZADD", "\(root.redisKey):unsuccessful", "1", decomposed.redisKey],
+                ["HSET", ancestor.redisKey, "name", "Composed ancestor"],
+                ["HSET", descendant.redisKey, "name", "Decomposed descendant", "parentKey", ancestor.redisKey],
+                ["SADD", "\(ancestor.redisKey):dependencies", descendant.redisKey],
+                ["LPUSH", "\(prefix):\(root.queue):wait", root.jobID],
+                ["LPUSH", "\(prefix):\(composed.queue):wait", composed.jobID, ancestor.jobID],
+                ["LPUSH", "\(prefix):\(decomposed.queue):wait", decomposed.jobID, descendant.jobID]
+            ])
+
+            let engine = BullMQRedisEngine()
+            try await engine.connect(config)
+            do {
+                let siblings = try await engine.getJobFlow(root)
+                XCTAssertEqual(Set(siblings.nodes.map(\.id)), Set([root.id, composed.id, decomposed.id]))
+                XCTAssertEqual(Set(siblings.nodes.map(\.name)), ["Root", "Composed child", "Decomposed child"])
+                XCTAssertTrue(siblings.nodes.allSatisfy { $0.state == .waiting })
+                XCTAssertEqual(siblings.edges.count, 2)
+                XCTAssertEqual(Set(siblings.edges.map(\.parent)), [root.id])
+                XCTAssertEqual(Set(siblings.edges.map(\.child)), Set([composed.id, decomposed.id]))
+                XCTAssertFalse(siblings.truncated)
+
+                let chain = try await engine.getJobFlow(descendant)
+                XCTAssertEqual(chain.nodes.map(\.id), [ancestor.id, descendant.id])
+                XCTAssertEqual(chain.nodes.map(\.name), ["Composed ancestor", "Decomposed descendant"])
+                XCTAssertTrue(chain.nodes.allSatisfy { $0.state == .waiting })
+                XCTAssertEqual(chain.edges.map(\.parent), [ancestor.id])
+                XCTAssertEqual(chain.edges.map(\.child), [descendant.id])
+                XCTAssertFalse(chain.truncated)
             } catch { await engine.disconnect(); throw error }
             await engine.disconnect()
         }
