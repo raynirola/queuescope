@@ -168,7 +168,9 @@ test("app bridge packaging uses its own lock outside the workspace", { timeout: 
   assert.equal(await readFile(path.join(bundle, "bridge.mjs"), "utf8"), await readFile(path.join(source, "bridge.mjs"), "utf8"));
   const manifest = JSON.parse(await readFile(path.join(bundle, "package.json"), "utf8"));
   assert.equal(manifest.private, true);
-  assert.deepEqual(manifest.dependencies, { bullmq: "5.77.0" });
+  assert.deepEqual(manifest.dependencies, { bullmq: "5.77.0", "cron-parser": "4.9.0" });
+  const installedCronParser = JSON.parse(await readFile(path.join(bundle, "node_modules/cron-parser/package.json"), "utf8"));
+  assert.equal(installedCronParser.version, "4.9.0");
   const installedBullMQ = JSON.parse(await readFile(path.join(bundle, "node_modules/bullmq/package.json"), "utf8"));
   assert.equal(installedBullMQ.version, "5.77.0");
 

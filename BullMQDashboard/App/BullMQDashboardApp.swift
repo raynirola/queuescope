@@ -3,15 +3,14 @@ import SwiftUI
 
 @main
 struct BullMQDashboardApp: App {
-    @StateObject private var appModel = AppModel()
+    @FocusedObject private var appModel: AppModel?
     @StateObject private var appUpdater = AppUpdater()
 
     var body: some Scene {
         WindowGroup {
             if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
                NSClassFromString("XCTestCase") == nil {
-                DashboardRootView()
-                    .environmentObject(appModel)
+                QueueScopeWindow()
                     .frame(minWidth: 1120, minHeight: 720)
             }
         }
@@ -24,9 +23,10 @@ struct BullMQDashboardApp: App {
 
             CommandGroup(after: .newItem) {
                 Button("Refresh") {
-                    Task { await appModel.refreshSelectedQueue() }
+                    Task { await appModel?.refreshSelectedQueue() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+                .disabled(appModel?.isConnected != true)
             }
 
             CommandGroup(after: .appInfo) {
@@ -51,5 +51,18 @@ struct BullMQDashboardApp: App {
             .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
             .credits: credits
         ])
+    }
+}
+
+// Each scene owns its engine, connection, selection and refresh lifecycle.
+struct QueueScopeWindow: View {
+    @StateObject private var model = AppModel()
+
+    var body: some View {
+        DashboardRootView()
+            .environmentObject(model)
+            .focusedSceneObject(model)
+            .navigationTitle(model.activeConnection.map { "QueueScope — \($0.name)" } ?? "QueueScope")
+            .onDisappear { model.closeWindow() }
     }
 }

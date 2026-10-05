@@ -16,7 +16,7 @@ To leave the demo, open Connection Manager, disconnect, and connect to your Redi
 4. Choose **Connect**. A new workspace discovers queues automatically; use **Discover queues** and **Scan more** if more Redis keys remain. You can also add a queue by name.
 5. Choose **Save** to remember the connection. Release builds store Redis credentials in Keychain.
 
-Redis ACLs must allow the reads used by the app, including `PING`, `SCAN`, list/sorted-set reads, and hash reads. Worker discovery also requires `CLIENT LIST`. An app read-only profile prevents QueueScope mutations; Redis ACLs provide server-side enforcement.
+Redis ACLs must allow the reads used by the app, including `PING`, `SCAN`, list/sorted-set reads, and hash reads. Worker discovery also requires `CLIENT LIST`. Scheduler inspection additionally uses BullMQ’s read-only Lua script and needs `EVAL`/`EVALSHA` and `SCRIPT LOAD` permission; Redis ACLs can still deny all write commands. An app read-only profile prevents QueueScope mutations; Redis ACLs provide server-side enforcement.
 
 ## Connect through SSH
 
@@ -47,3 +47,21 @@ Debug builds use a separate local, unencrypted credential store to avoid Keychai
 The build still needs Node/npm for installing locked bridge dependencies. Packaging downloads official Node 22.23.3 binaries with pinned SHA-256 verification, embeds the architectures requested by Xcode, includes Node's license, and signs the nested runtime before app signing. The first build needs network access; verified archives are cached under DerivedData. Update both pinned digests when upgrading Node.
 
 Before publishing, build the intended architectures, run the tests, inspect light/dark UI captures, and complete normal app signing/notarization. A successful local build is not a published release.
+
+## Compare connections in separate windows
+
+Choose **File → New Window**, then connect the new window to another Redis profile. Each window keeps its own connection, SSH tunnel, queue selection, filters, refresh interval, and reconnect tasks. **Command-R** refreshes the focused window. Saved profiles and metric history are shared locally.
+
+A lost Redis connection keeps the last loaded data visible with a disconnected banner. QueueScope retries after 1, 2, 5, 10, 30, and then 60 seconds. Choose **Cancel** to stop or **Retry now** to try immediately. Changing connections or closing the window cancels recovery. Authentication, permission, and certificate failures require correcting the connection settings. Recovery refreshes reads and never repeats job mutations.
+
+## Inspect and remove schedules
+
+Open **Schedulers → Inspect schedule**, or click a schedule in Overview. Review its cadence, timezone, emitted iteration count, and available start/end/iteration limits. The first scheduled time comes from Redis; later times are estimates using BullMQ's default repeat strategy. Cron projections support five- or six-field patterns. **Preview timezone** defaults to the recorded schedule timezone, or your Mac’s timezone when none is recorded. Choose System or a specific timezone to change the estimates without changing the saved schedule. If your workers use a different timezone, select it for an accurate preview. Custom repeat strategies, worker availability, and missing legacy metadata can limit the preview.
+
+Choose **Remove schedule** and review the confirmation to stop future repeats. QueueScope supports modern job schedulers and legacy repeatable jobs through their respective BullMQ APIs. BullMQ also removes the next delayed occurrence. Jobs already waiting or active may still execute, and retained completed/failed jobs remain available for inspection.
+
+## Clean retained jobs
+
+In **Runs**, choose **Clean retained**. Select **Completed** or **Failed**, enter an age of at least one minute, and set a maximum between 1 and 1,000 jobs. Choose **Review cleanup**, verify the destination and scope, then confirm permanent removal. BullMQ removes eligible retained jobs and their logs; pending and active jobs are excluded. The queue refreshes after completion. Cleanup may remove fewer jobs than the maximum because eligibility can change while workers run.
+
+These operations are disabled for read-only profiles and the offline demo. Scheduler inspection remains available on read-only profiles with the required Redis read/script permissions.

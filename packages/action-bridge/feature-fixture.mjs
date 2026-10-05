@@ -7,6 +7,7 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Inv
 const connection = { host: "127.0.0.1", port };
 const queue = new Queue("feature-jobs", { connection });
 const literal = new Queue("literal", { connection, prefix: "team[*]" });
+const schedules = new Queue("schedules", { connection });
 const outcomes = new Queue("outcomes", { connection });
 const workers = [
   new Worker("workers", async () => {}, { connection, name: "visible" }),
@@ -19,6 +20,8 @@ try {
     name: index === 0 ? "needle" : "ordinary", data: { index }, opts: { jobId: `job-${index}`, timestamp: Date.UTC(2026, 0, 1) }
   })));
   await literal.add("literal", {});
+  await schedules.upsertJobScheduler("modern:custom:id", { every: 60000, limit: 3 }, { name: "modern", data: {} });
+  await schedules.add("legacy", {}, { repeat: { every: 60000 } });
   const failed = await outcomes.add("failure", {}, { jobId: "outcome-failed" });
   for (let i = 0; i < 100 && await failed.getState() !== "failed"; i++) await delay(20);
   if (await failed.getState() !== "failed") throw new Error("Fixture failed job not ready");
@@ -36,5 +39,5 @@ try {
   for await (const chunk of process.stdin) {}
 } finally {
   await Promise.all(workers.map(worker => worker.close()));
-  await Promise.all([queue.close(), literal.close(), outcomes.close(), flow.close()]);
+  await Promise.all([queue.close(), literal.close(), outcomes.close(), schedules.close(), flow.close()]);
 }

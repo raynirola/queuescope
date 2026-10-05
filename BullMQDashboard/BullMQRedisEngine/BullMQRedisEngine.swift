@@ -3,6 +3,8 @@ import Foundation
 actor BullMQRedisEngine: BullMQEngine {
     private var sshTunnel: SSHTunnel?
     private var redis: RedisRESPClient?
+    private var pendingRedis: RedisRESPClient?
+    private var pendingTunnel: SSHTunnel?
     private var config: RedisConnectionConfig?
     private var connectionGeneration = UUID()
     private let mutationClient = BullMQMutationClient()
@@ -24,19 +26,32 @@ actor BullMQRedisEngine: BullMQEngine {
         let client = RedisRESPClient()
         var transport = config
         let tunnel = config.ssh == nil ? nil : SSHTunnel()
+        pendingRedis = client
+        pendingTunnel = tunnel
         do {
-            if let settings = config.ssh, let tunnel {
-                transport.transportPort = try await tunnel.start(settings, redisHost: config.host, redisPort: config.port)
-                transport.transportHost = "127.0.0.1"
+            try await withTaskCancellationHandler {
+                if let settings = config.ssh, let tunnel {
+                    transport.transportPort = try await tunnel.start(settings, redisHost: config.host, redisPort: config.port)
+                    transport.transportHost = "127.0.0.1"
+                }
+                guard generation == connectionGeneration else { throw CancellationError() }
+                try await client.connect(transport)
+                _ = try await client.command(["PING"])
+                guard generation == connectionGeneration else { throw CancellationError() }
+                try Task.checkCancellation()
+                self.redis = client
+                self.config = transport
+                self.sshTunnel = tunnel
+                pendingRedis = nil
+                pendingTunnel = nil
+            } onCancel: {
+                Task { await client.disconnect(); await tunnel?.stop() }
             }
-            guard generation == connectionGeneration else { throw CancellationError() }
-            try await client.connect(transport)
-            _ = try await client.command(["PING"])
-            guard generation == connectionGeneration else { throw CancellationError() }
-            self.redis = client
-            self.config = transport
-            self.sshTunnel = tunnel
         } catch {
+            if generation == connectionGeneration {
+                pendingRedis = nil
+                pendingTunnel = nil
+            }
             await client.disconnect()
             await tunnel?.stop()
             throw error
@@ -48,8 +63,14 @@ actor BullMQRedisEngine: BullMQEngine {
         let previousTunnel = sshTunnel
         sshTunnel = nil
         let previous = redis
+        let connectingClient = pendingRedis
+        let connectingTunnel = pendingTunnel
         redis = nil
+        pendingRedis = nil
+        pendingTunnel = nil
         config = nil
+        await connectingClient?.disconnect()
+        await connectingTunnel?.stop()
         await previous?.disconnect()
         await previousTunnel?.stop()
     }
@@ -333,6 +354,21 @@ actor BullMQRedisEngine: BullMQEngine {
         return try await mutationClient.addJob(config: config, queueName: queueName, prefix: prefix, name: name, data: data, options: options)
     }
 
+    func cleanJobs(queueName: String, prefix: String, state: BullMQState, grace: Int, limit: Int) async throws -> Int {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        return try await mutationClient.cleanJobs(config: config, queueName: queueName, prefix: prefix, state: state, grace: grace, limit: limit)
+    }
+
+    func getSchedulerPreview(queueName: String, prefix: String, key: String, timeZone: String? = nil) async throws -> SchedulerPreview {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        return try await mutationClient.getSchedulerPreview(config: config, queueName: queueName, prefix: prefix, key: key, timeZone: timeZone)
+    }
+
+    func removeScheduler(queueName: String, prefix: String, key: String, kind: String) async throws {
+        guard let config else { throw BullMQDashboardError.notConnected }
+        try await mutationClient.removeScheduler(config: config, queueName: queueName, prefix: prefix, key: key, kind: kind)
+    }
+
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {
         let overview = try await getQueueOverview(queueName: queueName, prefix: prefix)
         let nativeMetrics = try await getNativeMetrics(queueName: queueName, prefix: prefix)
@@ -399,24 +435,14 @@ actor BullMQRedisEngine: BullMQEngine {
         let repeatSetResponse = try await command(["ZRANGE", repeatKey, "0", "-1", "WITHSCORES"])
         let repeatMembers = repeatMembers(from: repeatSetResponse)
         let repeatMetadata = try await repeatMetadataByMember(repeatMembers, repeatKey: repeatKey)
-        let repeatSchedulers = schedulerSummariesFromRepeatSet(
+        // Only registered repeat-set members are schedules. Emitted jobs may
+        // remain after removal and must not resurrect a deleted schedule.
+        return schedulerSummariesFromRepeatSet(
             repeatSetResponse,
             queueName: queueName,
             repeatKey: repeatKey,
             metadataByMember: repeatMetadata
         )
-        if !repeatSchedulers.isEmpty {
-            return repeatSchedulers
-        }
-
-        let repeatJobs = try await getRecentJobs(
-            queueName: queueName,
-            prefix: prefix,
-            states: [.delayed, .waiting, .completed, .failed],
-            perStateLimit: 25,
-            totalLimit: 100
-        )
-        return try await schedulerSummariesFromRepeatJobs(repeatJobs, queueName: queueName, repeatKey: repeatKey)
     }
 
     private func schedulerSummariesFromRepeatSet(
@@ -448,47 +474,6 @@ actor BullMQRedisEngine: BullMQEngine {
             index += 2
         }
         return schedulers
-    }
-
-    private func schedulerSummariesFromRepeatJobs(_ jobs: [JobSummary], queueName: String, repeatKey: String) async throws -> [SchedulerSummary] {
-        var schedulersByKey: [String: SchedulerSummary] = [:]
-        var metadataByMember: [String: [String: String]] = [:]
-
-        for job in jobs where job.id.hasPrefix("repeat:") {
-            let parts = job.id.components(separatedBy: ":")
-            guard parts.count >= 3 else { continue }
-            let timestamp = parts.last
-            let repeatMember = parts.dropFirst().dropLast().joined(separator: ":")
-            guard !repeatMember.isEmpty else { continue }
-            let id = "\(repeatKey):\(repeatMember)"
-            let metadata: [String: String]
-            if let cachedMetadata = metadataByMember[repeatMember] {
-                metadata = cachedMetadata
-            } else {
-                metadata = try await hgetall("\(repeatKey):\(repeatMember)")
-                metadataByMember[repeatMember] = metadata
-            }
-
-            if let existing = schedulersByKey[id],
-               let existingRun = existing.nextRun,
-               let nextRun = job.delayedUntil,
-               existingRun <= nextRun {
-                continue
-            }
-
-            schedulersByKey[id] = SchedulerSummary(
-                id: id,
-                queueName: queueName,
-                name: schedulerName(fromRepeatMember: repeatMember, metadata: metadata),
-                nextRun: job.delayedUntil ?? BullMQParsing.dateFromMilliseconds(timestamp),
-                raw: schedulerRawFields(metadata: metadata, base: [
-                    "key": "\(repeatKey):\(repeatMember):\(timestamp ?? "")",
-                    "repeatKey": repeatMember,
-                    "source": "repeat-job"
-                ])
-            )
-        }
-        return schedulersByKey.values.sorted { $0.name < $1.name }
     }
 
     private func repeatMembers(from response: RESPValue) -> [String] {

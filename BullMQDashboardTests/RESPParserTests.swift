@@ -192,6 +192,52 @@ final class RedisTransportTests: XCTestCase {
                 let resumed = try await engine.getQueueOverview(queueName: "feature-jobs", prefix: "bull")
                 XCTAssertFalse(resumed.isPaused)
                 XCTAssertEqual(resumed.counts.waiting, 620)
+                let schedules = try await engine.getSchedulers(queueName: "schedules", prefix: "bull")
+                XCTAssertEqual(schedules.count, 2)
+                let modern = try XCTUnwrap(schedules.first { $0.name == "modern" })
+                let legacy = try XCTUnwrap(schedules.first { $0.name == "legacy" })
+                let modernKey = try XCTUnwrap(modern.raw["repeatKey"])
+                let legacyKey = try XCTUnwrap(legacy.raw["repeatKey"])
+                _ = try await client.command(["HSET", "bull:schedules:meta", "version", "preserve-this"])
+                _ = try await client.command(["ACL", "SETUSER", "preview", "on", ">test-password", "~bull:schedules:*", "+@read", "+ping", "+info", "+eval", "+evalsha", "+script|load", "+client|setname", "+client|setinfo", "+quit"])
+                var previewConfig = try RedisURLParser.parse("redis://preview:test-password@127.0.0.1:\(config.port)")
+                previewConfig.isReadOnly = true
+                let previewEngine = BullMQRedisEngine()
+                try await previewEngine.connect(previewConfig)
+                do {
+                    let preview = try await previewEngine.getSchedulerPreview(queueName: "schedules", prefix: "bull", key: modernKey)
+                    XCTAssertEqual(preview.kind, "scheduler")
+                    XCTAssertEqual(preview.dates.count, 3)
+                    XCTAssertEqual(preview.fields["limit"], "3")
+                    XCTAssertEqual(preview.fields["iterationCount"], "1")
+                    XCTAssertEqual(preview.fields["previewTimeZone"], TimeZone.current.identifier)
+                    let override = try await previewEngine.getSchedulerPreview(queueName: "schedules", prefix: "bull", key: modernKey, timeZone: "America/New_York")
+                    XCTAssertEqual(override.fields["previewTimeZone"], "America/New_York")
+                    XCTAssertEqual(override.fields["previewTimeZoneSource"], "override")
+                    XCTAssertEqual(override.times, preview.times, "Timezone changes must not shift absolute interval times")
+                    let version = try await client.command(["HGET", "bull:schedules:meta", "version"])
+                    XCTAssertEqual(version.string, "preserve-this")
+                    do {
+                        _ = try await previewEngine.cleanJobs(queueName: "schedules", prefix: "bull", state: .completed, grace: 60000, limit: 10)
+                        XCTFail("Read-only cleanup must fail")
+                    } catch { XCTAssertTrue(error.localizedDescription.contains("read-only")) }
+                    do {
+                        try await previewEngine.removeScheduler(queueName: "schedules", prefix: "bull", key: modernKey, kind: "scheduler")
+                        XCTFail("Read-only scheduler removal must fail")
+                    } catch { XCTAssertTrue(error.localizedDescription.contains("read-only")) }
+                } catch { await previewEngine.disconnect(); throw error }
+                await previewEngine.disconnect()
+                try await engine.removeScheduler(queueName: "schedules", prefix: "bull", key: modernKey, kind: "scheduler")
+                try await engine.removeScheduler(queueName: "schedules", prefix: "bull", key: legacyKey, kind: "legacy")
+                let afterRemoval = try await engine.getSchedulers(queueName: "schedules", prefix: "bull")
+                XCTAssertTrue(afterRemoval.isEmpty, "Emitted repeat jobs must not resurrect removed schedules")
+                _ = try await client.command(["HSET", "bull:outcomes:outcome-failed", "finishedOn", "1"])
+                _ = try await client.command(["ZADD", "bull:outcomes:failed", "1", "outcome-failed"])
+                let cleaned = try await engine.cleanJobs(queueName: "outcomes", prefix: "bull", state: .failed, grace: 60000, limit: 1)
+                XCTAssertEqual(cleaned, 1)
+                let removedFailure = try await engine.findJob(queueName: "outcomes", prefix: "bull", jobID: "outcome-failed")
+                XCTAssertNil(removedFailure)
+
                 var readOnly = config
                 readOnly.isReadOnly = true
                 try await engine.connect(readOnly)
@@ -251,6 +297,26 @@ final class RedisTransportTests: XCTestCase {
                 XCTAssertFalse(chain.truncated)
             } catch { await engine.disconnect(); throw error }
             await engine.disconnect()
+        }
+    }
+
+    func testDisconnectClosesAConnectionStillWaitingForRedis() async throws {
+        try await withRedis(commandTimeout: 5) { client, config in
+            _ = try await client.command(["CLIENT", "PAUSE", "3000", "ALL"])
+            let engine = BullMQRedisEngine()
+            let connecting = Task { try await engine.connect(config) }
+            try await Task.sleep(for: .milliseconds(100))
+            let started = Date()
+            await engine.disconnect()
+            do {
+                try await connecting.value
+                XCTFail("A disconnected connection attempt must not publish a session")
+            } catch { /* Expected: the pending transport was closed. */ }
+            XCTAssertLessThan(Date().timeIntervalSince(started), 1, "Closing a window must not wait for Redis's pending reply")
+            do {
+                _ = try await engine.getQueueOverview(queueName: "test", prefix: "bull")
+                XCTFail("No transport should remain after disconnect")
+            } catch { XCTAssertEqual(error as? BullMQDashboardError, .notConnected) }
         }
     }
 

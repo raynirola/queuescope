@@ -350,6 +350,14 @@ struct SchedulerSummary: Identifiable, Equatable, Sendable {
     var raw: [String: String]
 }
 
+struct SchedulerPreview: Codable, Equatable, Sendable {
+    var fields: [String: String]
+    var kind: String
+    var times: [Double]
+    var message: String
+    var dates: [Date] { times.map { Date(timeIntervalSince1970: $0 / 1000) } }
+}
+
 enum DisplayValue: Equatable, Sendable {
     case empty
     case json(String)

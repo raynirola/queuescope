@@ -112,9 +112,29 @@ struct BullMQMutationClient: Sendable {
         return jobID
     }
 
+    func cleanJobs(config: RedisConnectionConfig, queueName: String, prefix: String, state: BullMQState, grace: Int, limit: Int) async throws -> Int {
+        let response = try await run(request: BridgeRequest(redis: BridgeRedisConfig(config), queueName: queueName, prefix: prefix, action: "clean", payload: ["state": state.rawValue, "grace": grace, "limit": limit]))
+        guard let count = response.result?["removedCount"]?.rawValue as? Int else {
+            throw BullMQDashboardError.redis("Cleanup returned no count. Refresh before retrying.")
+        }
+        return count
+    }
+
+    func getSchedulerPreview(config: RedisConnectionConfig, queueName: String, prefix: String, key: String, timeZone: String? = nil) async throws -> SchedulerPreview {
+        let response = try await run(request: BridgeRequest(redis: BridgeRedisConfig(config), queueName: queueName, prefix: prefix, action: "schedulerPreview", payload: ["key": key, "systemTimeZone": TimeZone.current.identifier, "timeZone": timeZone as Any? ?? NSNull()]))
+        guard let preview = response.result?["preview"]?.rawValue else {
+            throw BullMQDashboardError.redis("No scheduler preview returned.")
+        }
+        return try JSONDecoder().decode(SchedulerPreview.self, from: JSONSerialization.data(withJSONObject: preview))
+    }
+
+    func removeScheduler(config: RedisConnectionConfig, queueName: String, prefix: String, key: String, kind: String) async throws {
+        try await run(request: BridgeRequest(redis: BridgeRedisConfig(config), queueName: queueName, prefix: prefix, action: "removeScheduler", payload: ["key": key, "kind": kind]))
+    }
+
     @discardableResult
     private func run(request: BridgeRequest) async throws -> BridgeResponse {
-        guard !request.redis.config.isReadOnly else { throw BullMQDashboardError.redis("This connection is read-only.") }
+        guard request.action == "schedulerPreview" || !request.redis.config.isReadOnly else { throw BullMQDashboardError.redis("This connection is read-only.") }
         let requestData = try BridgeJSON.data(from: request.dictionary)
         guard let nodePath else {
             throw BullMQDashboardError.redis("Node.js is required to run BullMQ job actions, but no node executable was found.")

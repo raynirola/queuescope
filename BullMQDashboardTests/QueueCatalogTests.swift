@@ -518,6 +518,9 @@ private final class CatalogTestEngine: BullMQEngine, @unchecked Sendable {
     func promoteJob(queueName: String, prefix: String, jobID: String) async throws { throw unexpectedMutation() }
     func duplicateJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String { throw unexpectedMutation() }
     func addJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String { throw unexpectedMutation() }
+    func cleanJobs(queueName: String, prefix: String, state: BullMQState, grace: Int, limit: Int) async throws -> Int { throw unexpectedMutation() }
+    func getSchedulerPreview(queueName: String, prefix: String, key: String, timeZone: String?) async throws -> SchedulerPreview { throw unexpectedMutation() }
+    func removeScheduler(queueName: String, prefix: String, key: String, kind: String) async throws { throw unexpectedMutation() }
     private func unexpectedMutation() -> Error {
         requests += 1
         XCTFail("Catalog import must not call Redis actions")

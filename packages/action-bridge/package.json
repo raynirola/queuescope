@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "bullmq": "5.77.0"
+    "bullmq": "5.77.0",
+    "cron-parser": "4.9.0"
   },
   "scripts": {
     "test": "node --test bridge.test.mjs"
