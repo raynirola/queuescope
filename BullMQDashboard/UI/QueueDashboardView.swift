@@ -1750,15 +1750,23 @@ private struct FailureTriageRow: View {
 private struct SchedulersPanel: View {
     @EnvironmentObject private var model: AppModel
     var style: SchedulerPanelStyle = .compact
+    @State private var inspectedScheduler: SchedulerSummary?
 
     var body: some View {
         let schedules = scheduleItems
 
-        if style == .detailed {
-            detailedBody(schedules)
-        } else {
-            compactBody(schedules)
+        Group {
+            if style == .detailed { detailedBody(schedules) }
+            else { compactBody(schedules) }
         }
+        .sheet(item: $inspectedScheduler) { scheduler in
+            if let connection = model.activeConnection {
+                SchedulerInspectionSheet(scheduler: scheduler, connection: connection)
+                    .environmentObject(model)
+            }
+        }
+        .onChange(of: model.activeConnection) { _, _ in inspectedScheduler = nil }
+        .onChange(of: model.isConnected) { _, connected in if !connected { inspectedScheduler = nil } }
     }
 
     private func compactBody(_ schedules: [SchedulerDisplayItem]) -> some View {
@@ -1769,7 +1777,11 @@ private struct SchedulersPanel: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(Array(schedules.prefix(4).enumerated()), id: \.element.id) { index, schedule in
-                        SchedulerRow(schedule: schedule, tint: tint(for: index))
+                        Button {
+                            inspectedScheduler = model.schedulers.first { $0.id == schedule.id }
+                        } label: { SchedulerRow(schedule: schedule, tint: tint(for: index)) }
+                        .buttonStyle(.plain)
+                        .disabled(!model.isConnected)
                     }
                 }
             }
@@ -1795,7 +1807,13 @@ private struct SchedulersPanel: View {
                 }
 
                 ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
-                    SchedulerDetailSection(schedule: schedule, tint: tint(for: index))
+                    VStack(alignment: .leading, spacing: 8) {
+                        SchedulerDetailSection(schedule: schedule, tint: tint(for: index))
+                        Button("Inspect schedule…") {
+                            inspectedScheduler = model.schedulers.first { $0.id == schedule.id }
+                        }
+                        .disabled(!model.isConnected)
+                    }
                 }
             }
         }

@@ -51,6 +51,12 @@ struct DemoBullMQEngine: BullMQEngine {
         let child = JobReference(prefix: reference.prefix, queue: "webhook-delivery", jobID: reference.jobID == "demo-1" ? "demo-2" : "demo-1")
         return JobFlow(nodes: [JobFlowNode(reference: reference, name: "Prepare order", state: .waitingChildren, depth: 0), JobFlowNode(reference: child, name: "Notify customer", state: .failed, depth: 1)], edges: [JobFlowEdge(parent: reference.id, child: child.id)])
     }
+    func cleanJobs(queueName: String, prefix: String, state: BullMQState, grace: Int, limit: Int) async throws -> Int { throw readOnlyError }
+    func removeScheduler(queueName: String, prefix: String, key: String, kind: String) async throws { throw readOnlyError }
+    func getSchedulerPreview(queueName: String, prefix: String, key: String, timeZone: String? = nil) async throws -> SchedulerPreview {
+        SchedulerPreview(fields: ["every": "60000", "tz": "UTC", "previewTimeZone": timeZone ?? "UTC", "previewTimeZoneSource": timeZone == nil ? "recorded" : "override"], kind: "scheduler", times: (1...5).map { Date().addingTimeInterval(Double($0 * 60)).timeIntervalSince1970 * 1000 }, message: "Offline sample schedule; estimated times.")
+    }
+
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] { [] }
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary] {
         [WorkerSummary(id: "demo-worker", queueName: queueName, name: "Demo worker", raw: ["addr": "127.0.0.1:5000", "age": "3600", "idle": "2", "cmd": "bzpopmin"])]

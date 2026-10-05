@@ -288,3 +288,167 @@ struct FailureInboxView: View {
         .onChange(of: model.failureInboxAllQueues) { _, _ in selectedGroup = nil; search = "" }
     }
 }
+
+
+struct QueueCleanupSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let queue: QueueSummary
+    let connection: RedisConnectionConfig
+    @State private var state: BullMQState = .completed
+    @State private var ageMinutes = "1440"
+    @State private var limit = "100"
+    @State private var confirmsCleanup = false
+
+    private var canSubmit: Bool {
+        model.activeConnection == connection && model.isConnected && model.canWrite && model.activeJobAction == nil
+            && (1...525600).contains(Int(ageMinutes) ?? 0) && (1...1000).contains(Int(limit) ?? 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Clean retained jobs").font(.title2.weight(.semibold))
+            Text("\(connection.name) · \(connection.host):\(String(connection.port)) · database \(String(connection.database))")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Queue: \(connection.prefix):\(queue.name)").textSelection(.enabled)
+            Form {
+                Picker("State", selection: $state) {
+                    Text("Completed").tag(BullMQState.completed)
+                    Text("Failed").tag(BullMQState.failed)
+                }
+                TextField("Older than (minutes)", text: $ageMinutes)
+                TextField("Maximum jobs (1–1,000)", text: $limit)
+            }
+            if !(1...525600).contains(Int(ageMinutes) ?? 0) || !(1...1000).contains(Int(limit) ?? 0) {
+                Text("Enter an age of 1–525,600 minutes and a limit of 1–1,000 jobs.").font(.caption).foregroundStyle(.red)
+            }
+            Text("Removes up to the maximum number of retained jobs older than this age. The live queue may change before cleanup runs. Job data and logs are permanently deleted; active and pending jobs are excluded.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = model.lastError { Text(error).foregroundStyle(.red).font(.caption) }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                    .disabled(model.activeJobAction != nil)
+                Button("Review cleanup…") { confirmsCleanup = true }
+                    .disabled(!canSubmit)
+            }
+        }
+        .padding(24).frame(width: 560)
+        .interactiveDismissDisabled(model.activeJobAction != nil)
+        .alert("Permanently clean \(state.rawValue) jobs?", isPresented: $confirmsCleanup) {
+            Button("Remove up to \(limit) jobs", role: .destructive) {
+                guard canSubmit, let age = Int(ageMinutes), let maximum = Int(limit) else { return }
+                Task {
+                    await model.cleanJobs(queueName: queue.name, connection: connection, state: state, grace: age * 60_000, limit: maximum)
+                    if model.lastError == nil { dismiss() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(connection.host):\(String(connection.port)), database \(String(connection.database)), \(connection.prefix):\(queue.name). Remove at most \(limit) \(state.rawValue) jobs older than \(ageMinutes) minutes. This cannot be undone.")
+        }
+        .onChange(of: model.activeConnection) { _, value in if value != connection { dismiss() } }
+    }
+}
+
+struct SchedulerInspectionSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let scheduler: SchedulerSummary
+    let connection: RedisConnectionConfig
+    @State private var preview: SchedulerPreview?
+    @State private var error: String?
+    @State private var confirmsRemoval = false
+    @State private var selectedTimeZone = ""
+    @State private var previewRequest = UUID()
+
+    private var timeZone: TimeZone { preview?.fields["previewTimeZone"].flatMap(TimeZone.init(identifier:)) ?? .current }
+    private var timeZoneOptions: [String] {
+        Array(Set(TimeZone.knownTimeZoneIdentifiers + [TimeZone.current.identifier, "UTC"] + [scheduler.raw["tz"]].compactMap { $0 })).sorted()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(scheduler.name).font(.title2.weight(.semibold))
+                Spacer()
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                    .disabled(model.activeJobAction != nil)
+            }
+            Text("\(model.activePrefix):\(scheduler.queueName) · \(scheduler.raw["repeatKey"] ?? scheduler.id)")
+                .font(.caption.monospaced()).textSelection(.enabled)
+            Picker("Preview timezone", selection: $selectedTimeZone) {
+                Text("Automatic · recorded timezone or system default").tag("")
+                Text("System · \(TimeZone.current.identifier)").tag("system")
+                ForEach(timeZoneOptions, id: \.self) { zone in Text(zone).tag(zone) }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let preview {
+                        LabeledContent("Type", value: preview.kind == "scheduler" ? "Job scheduler" : "Legacy repeatable job")
+                        LabeledContent("Cadence", value: preview.fields["pattern"] ?? preview.fields["every"].map { "Every \($0) ms" } ?? "Unknown")
+                        LabeledContent("Schedule timezone", value: preview.fields["tz"] ?? (preview.fields["pattern"] != nil ? "Worker default (not recorded)" : "Interval schedule"))
+                        if let count = preview.fields["iterationCount"] { LabeledContent("Iterations emitted", value: count) }
+                        if let limit = preview.fields["limit"] { LabeledContent("Iteration limit", value: limit) }
+                        ForEach(["startDate", "endDate"], id: \.self) { key in
+                            if let raw = preview.fields[key], let millis = Double(raw) {
+                                LabeledContent(key == "startDate" ? "Start date" : "End date", value: formatted(Date(timeIntervalSince1970: millis / 1000)))
+                            }
+                        }
+                        Divider()
+                        Text("Scheduled times").font(.headline)
+                        Text("Displayed in \(timeZone.identifier)").font(.caption).foregroundStyle(.secondary)
+                        if preview.dates.isEmpty { Text("No occurrences can be projected within the recorded limits.").foregroundStyle(.secondary) }
+                        ForEach(Array(preview.dates.enumerated()), id: \.offset) { index, date in
+                            LabeledContent(index == 0 ? "Stored next" : "Estimate \(index)", value: formatted(date))
+                        }
+                        Text(preview.message).font(.caption).foregroundStyle(.secondary)
+                    } else if error == nil { ProgressView("Loading schedule…") }
+                    if let error { Text(error).foregroundStyle(.red) }
+                }
+            }
+            HStack {
+                Button("Refresh") { Task { await load() } }.disabled(!model.isConnected || model.activeJobAction != nil)
+                Spacer()
+                Button("Remove schedule…", role: .destructive) { confirmsRemoval = true }
+                    .disabled(model.activeConnection != connection || preview == nil || !model.isConnected || !model.canWrite || model.activeJobAction != nil)
+            }
+        }
+        .padding(24).frame(width: 620, height: 520)
+        .interactiveDismissDisabled(model.activeJobAction != nil)
+        .task(id: selectedTimeZone) { await load() }
+        .alert("Remove this schedule?", isPresented: $confirmsRemoval) {
+            Button("Remove schedule", role: .destructive) {
+                guard let preview else { return }
+                Task {
+                    await model.removeScheduler(scheduler, connection: connection, kind: preview.kind)
+                    if model.lastError == nil { dismiss() } else { error = model.lastError }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Remove \(scheduler.name) from \(model.activePrefix):\(scheduler.queueName) on \(connection.name) (\(connection.host):\(String(connection.port)), database \(String(connection.database))). BullMQ removes the schedule and its next delayed occurrence. Already waiting, active, or finished jobs remain and may still run. This cannot be undone.")
+        }
+    }
+
+    private func formatted(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .abbreviated, time: .standard, timeZone: timeZone)) + " " + timeZone.identifier
+    }
+
+    private func load() async {
+        let request = UUID()
+        previewRequest = request
+        error = nil
+        preview = nil
+        let override = selectedTimeZone.isEmpty ? nil : selectedTimeZone == "system" ? TimeZone.current.identifier : selectedTimeZone
+        do {
+            let result = try await model.schedulerPreview(scheduler, timeZone: override)
+            guard request == previewRequest, !Task.isCancelled else { return }
+            preview = result
+        } catch is CancellationError {} catch {
+            guard request == previewRequest, !Task.isCancelled else { return }
+            self.error = error.localizedDescription
+        }
+    }
+}

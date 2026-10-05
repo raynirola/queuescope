@@ -22,7 +22,7 @@ Need a shared browser dashboard or legacy Bull support? Compare the documented w
 
 ## Current Features
 
-- Native SwiftUI three-pane macOS interface.
+- Native SwiftUI three-pane macOS interface with independent connection workspaces in each window.
 - Redis URL connection with `redis://` and `rediss://` parsing.
 - Saved connection profiles with credentials in macOS Keychain in release builds; prompt-free, separate local storage in development builds.
 - SSH tunnels using system OpenSSH, existing keys/agent, and verified known hosts.
@@ -30,7 +30,7 @@ Need a shared browser dashboard or legacy Bull support? Compare the documented w
 - Failure inbox grouping retained errors across queues, with incremental scans and representative job inspection.
 - Queue discovery by prefix, plus manually added queues and saved display names/groups.
 - Exact job ID lookup and incremental name, failure-text, state, and creation-date filtering.
-- Configurable automatic refresh with last-updated, stale, and refresh-failure indicators.
+- Configurable automatic refresh with last-updated, stale, and refresh-failure indicators; automatic reconnect with backoff and cancel/retry controls.
 - Read-only connection profiles and queue pause/resume controls.
 - Parent/child flow graphs with cross-queue job inspection.
 - Queue counters for waiting, active, delayed, prioritized, completed, failed, paused, and waiting-children.
@@ -38,7 +38,9 @@ Need a shared browser dashboard or legacy Bull support? Compare the documented w
 - Job inspector for payload, options, progress, return value, failure reason, stack trace, and timestamps.
 - Job actions for retrying completed/failed jobs, promoting delayed jobs, removing non-active jobs, and duplicating jobs with editable data/options.
 - Local metric snapshots scoped to the Redis host, port, database, prefix, and queue, without writing to Redis.
-- Scheduler discovery and live named worker connections from Redis CLIENT LIST.
+- Scheduler discovery, detailed schedule inspection with upcoming-time estimates, and confirmed removal of modern or legacy schedules.
+- Age- and count-limited cleanup of retained completed/failed jobs through BullMQ.
+- Live named worker connections from Redis CLIENT LIST.
 - Sparkle-backed manual app update checks.
 
 ## Node.js and Next.js adapters
@@ -47,7 +49,7 @@ The repository includes npm workspaces for `@queuescope/node` and `@queuescope/n
 
 ## Job Actions
 
-QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `packages/action-bridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, `Queue.add`, `Queue.pause`, and `Queue.resume`.
+QueueScope keeps direct Swift Redis access read-focused. Mutating job actions run through `packages/action-bridge/bridge.mjs`, a small Node helper that uses the official `bullmq` package for `Job.retry`, `Job.remove`, `Job.promote`, `Queue.add`, `Queue.pause`, `Queue.resume`, `Queue.clean`, `Queue.removeJobScheduler`, and `Queue.removeRepeatableByKey`. Read-only scheduler previews use the same pinned cron parser as BullMQ and disable queue metadata updates.
 
 The Xcode build packages the bridge and its locked production dependencies into `QueueScope.app`, so people using the built app do not run `npm install`. The build machine needs npm available so the `Package BullMQ action bridge` build phase can install the locked bridge dependencies into the app bundle. The app bundles a pinned Node runtime, so job actions work without a separate Node installation. `BULLMQ_NODE_PATH` can override it for development; Homebrew, `/usr/local`, `/usr/bin`, and nvm are fallback locations for older bundles; set `BULLMQ_ACTION_BRIDGE_PATH` only when deliberately overriding the packaged bridge during development.
 
@@ -57,9 +59,12 @@ Job actions have a 30-second deadline and support task cancellation. The app dra
 
 - **Discovery:** choose Discover queues in the sidebar. Scans use the connected prefix and preserve saved groups and display names. If more Redis keys remain, choose Scan more.
 - **Search:** open a job directly by ID, or combine name/failure-text filters with state selection and optional creation dates. Search reads up to 500 job entries per request; Search more continues from the previous position. Results are not a snapshot: jobs can move between states while you browse. Automatic refresh pauses during a filtered search so it does not discard your progress; Refresh reruns the search.
-- **Refresh:** choose Manual, 5, 15, 30, or 60 seconds. The interval is saved per connection. Polling runs only while the app is active and no other operation is in progress, and pauses after a refresh failure. The last successful refresh remains visible with a stale/error indicator.
+- **Refresh:** choose Manual, 5, 15, 30, or 60 seconds. The interval is saved per connection. Polling runs only while the app is active and no other operation is in progress, and pauses after a command or refresh failure. A lost transport triggers reconnection to the active connection with 1, 2, 5, 10, 30, then 60-second delays. The banner preserves cached data and offers Cancel and Retry now. Authentication, permission, or certificate failures stop automatic retries. Mutations are never replayed. The last successful refresh remains visible with a stale/error indicator.
 - **Read-only:** enable Read-only connection before connecting or saving a profile. The setting applies to the connected session; editing the form does not change its permissions. All mutations are rejected before launching the bridge, including bulk actions and queue pause/resume. This is an app safeguard; use Redis ACLs when server-enforced permissions are required.
 - **Pause/resume:** pausing stops new jobs from being claimed; currently active jobs may finish. Both operations require confirmation and use BullMQ itself.
+- **Windows:** choose File → New Window to inspect another connection alongside the current one. Each window owns its Redis engine, SSH tunnel, selected queue, filters, and refresh/reconnect tasks. Saved profiles and local history remain shared; closing a window closes its transport. Command-R refreshes the focused window.
+- **Schedulers:** choose Inspect schedule in Schedulers, or click a schedule in Overview. The detail shows cadence, timezone, available iteration/start/end limits, the stored next occurrence, and up to four estimates. Cron estimates use the recorded timezone when available, otherwise your Mac’s timezone. The Preview timezone selector can override either for inspection without changing Redis. Estimates use BullMQ's default parser; custom worker repeat strategies and worker delays cannot be predicted. Interval estimates preserve the recorded offset. Missing legacy limits remain unknown. Remove schedule requires confirmation and uses the appropriate BullMQ API; the next delayed occurrence is removed, while jobs already waiting, active, or finished remain.
+- **Cleanup:** in Runs, choose Clean retained, select Completed or Failed, and enter an age in minutes and a maximum of 1–1,000 jobs. Review the connection, database, prefix, queue, state, age, and count before confirming permanent deletion. Cleanup preserves pending and active jobs and refreshes the queue afterward. Repeat the operation explicitly to remove another batch.
 - **Workers:** lists actual named BullMQ worker connections in the selected Redis database. It requires CLIENT LIST permission and providers that support worker client names. Connection presence does not prove processing activity; worker concurrency or processed-job counts are not inferred.
 - **Flows:** enter a job ID in Flow graph or choose View parent and child jobs in the inspector. The graph includes ancestors and the selected job's descendants across queues. Select a node to inspect it. Each graph is limited to 80 jobs, eight ancestor levels, and six descendant levels, with a partial-graph notice when truncated. Open a descendant's flow to explore that branch. Jobs under another prefix can be inspected, but their mutations are disabled; connect to that prefix to operate on them.
 

@@ -8,7 +8,27 @@ struct DashboardRootView: View {
     @State private var didPresentInitialConnectionManager = false
 
     var body: some View {
-        rootSplit
+        VStack(spacing: 0) {
+            if !model.isConnected, model.activeConnection != nil, !model.isDemo {
+                HStack(spacing: 12) {
+                    Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.isReconnecting
+                             ? "Reconnecting · attempt \(model.reconnectAttempt) · \(model.reconnectSecondsRemaining ?? 0)s"
+                             : "Disconnected · showing cached data")
+                        Text(model.lastRefreshError ?? "Connection interrupted")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer()
+                    Button("Retry now") { model.retryConnectionNow() }
+                    if model.isReconnecting { Button("Cancel") { model.cancelReconnect() } }
+                }
+                .padding(12)
+                .background(.orange.opacity(0.08))
+                Divider()
+            }
+            rootSplit
+        }
         .frame(minWidth: 1120, minHeight: 720)
         .animation(.snappy(duration: 0.18), value: isInspectorVisible)
         .animation(.snappy(duration: 0.18), value: model.inspectorRevision)

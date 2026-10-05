@@ -3,6 +3,7 @@ import SwiftUI
 struct JobTableView: View {
     @EnvironmentObject private var model: AppModel
     @State private var isBulkRemoveConfirmationPresented = false
+    @State private var isCleanupPresented = false
     @State private var isAddJobSheetPresented = false
     @State private var addJobDraft = JobDuplicateDraft(name: "", dataJSON: "{}", optionsJSON: "{}")
 
@@ -28,6 +29,10 @@ struct JobTableView: View {
                     }
                     .controlSize(.small)
                     .disabled(model.selectedQueue == nil || model.activeJobAction != nil || !model.canWrite)
+
+                    Button("Clean retained…") { isCleanupPresented = true }
+                        .controlSize(.small)
+                        .disabled(!model.isConnected || !model.canWrite || model.isLoading)
 
                     Menu {
                         Button {
@@ -97,6 +102,12 @@ struct JobTableView: View {
                 }
             } message: {
                 Text("This removes \(model.selectedBulkRemoveCount) non-active selected jobs and their children from BullMQ. Active or locked jobs may be rejected by BullMQ.")
+            }
+            .sheet(isPresented: $isCleanupPresented) {
+                if let queue = model.selectedQueue, let config = model.activeConnection {
+                    QueueCleanupSheet(queue: queue, connection: config)
+                        .environmentObject(model)
+                }
             }
             .sheet(isPresented: $isAddJobSheetPresented) {
                 JobDraftSheet(

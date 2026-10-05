@@ -168,7 +168,7 @@ final class BullMQParsingTests: XCTestCase {
 
 @MainActor
 final class AppModelRefreshTests: XCTestCase {
-    private func makeModel(engine: BullMQEngine) -> AppModel {
+    private func makeModel(engine: BullMQEngine, reconnectDelays: [Int] = [1, 2, 5, 10, 30, 60]) -> AppModel {
         let suite = "QueueScopeTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
@@ -180,7 +180,8 @@ final class AppModelRefreshTests: XCTestCase {
             snapshotStore: MetricSnapshotStore(fileURL: directory.appendingPathComponent("metrics.json"), legacyDefaults: defaults),
             queueNameStore: QueueNameStore(defaults: defaults),
             queueMetadataStore: QueueMetadataStore(defaults: defaults),
-            workspacePreferenceStore: QueueWorkspacePreferenceStore(defaults: defaults)
+            workspacePreferenceStore: QueueWorkspacePreferenceStore(defaults: defaults),
+            reconnectDelays: reconnectDelays
         )
     }
 
@@ -1131,6 +1132,218 @@ final class AppModelRefreshTests: XCTestCase {
         XCTAssertEqual(engine.recentJobsCalls, ["email"])
         XCTAssertEqual(model.statusMessage, "Added job new")
     }
+
+    func testWindowsKeepIndependentConnectionsSelectionsAndRefreshState() async throws {
+        let firstEngine = FakeBullMQEngine()
+        let secondEngine = FakeBullMQEngine()
+        let first = makeModel(engine: firstEngine)
+        let second = makeModel(engine: secondEngine)
+        first.redisURL = "redis://prod.local:6379/1"; first.prefix = "prod"
+        second.redisURL = "redis://staging.local:6379/2"; second.prefix = "staging"
+        await first.connect(); await second.connect()
+        first.selectedQueue = QueueSummary(name: "email", prefix: "prod", counts: .empty, health: .healthy)
+        second.selectedQueue = QueueSummary(name: "video", prefix: "staging", counts: .empty, health: .healthy)
+        first.selectedState = .failed; second.selectedState = .delayed
+        first.setRefreshInterval(5); second.setRefreshInterval(60)
+        await first.refreshSelectedQueue(for: .runs)
+        XCTAssertEqual(firstEngine.overviewPrefixes, ["prod"])
+        XCTAssertTrue(secondEngine.overviewCalls.isEmpty)
+        first.closeWindow()
+        XCTAssertTrue(second.isConnected)
+        XCTAssertEqual(second.activeConnection?.host, "staging.local")
+        XCTAssertEqual(second.selectedQueue?.name, "video")
+        XCTAssertEqual(second.selectedState, .delayed)
+        XCTAssertEqual(second.refreshInterval, 60)
+        XCTAssertEqual(first.refreshInterval, 5)
+        await second.disconnect()
+    }
+
+    func testReconnectUsesActiveProfileAndRetainsSelectionWithoutReplayingWrites() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine, reconnectDelays: [0])
+        model.redisURL = "redis://prod.local:6379/3"; model.prefix = "prod"; model.connectionReadOnly = true
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "prod", counts: .empty, health: .healthy)
+        model.selectedView = .runs; model.selectedState = .failed
+        let cached = makeJob(id: "retained", queueName: "email", state: .failed)
+        model.jobs = [cached]
+        model.redisURL = "redis://edited.local"; model.prefix = "edited"; model.connectionReadOnly = false
+        engine.overviewError = BullMQDashboardError.connectionLost("Socket closed")
+        await model.refreshSelectedQueue()
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(model.jobs, [cached])
+        engine.overviewError = nil
+        for _ in 0..<100 where !model.isConnected { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(engine.connectCalls.count, 2)
+        XCTAssertEqual(engine.connectCalls.last?.host, "prod.local")
+        XCTAssertEqual(engine.connectCalls.last?.database, 3)
+        XCTAssertEqual(engine.connectCalls.last?.prefix, "prod")
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertEqual(model.selectedQueue?.name, "email")
+        XCTAssertEqual(model.selectedState, .failed)
+        XCTAssertTrue(engine.retryCalls.isEmpty)
+        XCTAssertNil(model.lastRefreshError)
+        await model.disconnect()
+    }
+
+    func testReconnectCanBeCancelledRetriedAndSupersededByProfileSwitch() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine, reconnectDelays: [1])
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        engine.overviewError = BullMQDashboardError.connectionLost("Socket closed")
+        await model.refreshSelectedQueue()
+        model.cancelReconnect()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertFalse(model.isReconnecting)
+        XCTAssertEqual(engine.connectCalls.count, 1)
+        engine.overviewError = nil
+        engine.connectDelay = .milliseconds(100)
+        model.retryConnectionNow()
+        for _ in 0..<50 where engine.connectCalls.count < 2 { try await Task.sleep(for: .milliseconds(5)) }
+        model.redisURL = "redis://replacement.local"; model.prefix = "replacement"
+        await model.connect()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(model.activeConnection?.host, "replacement.local")
+        XCTAssertEqual(engine.connectedConfig?.host, "replacement.local")
+        XCTAssertTrue(model.isConnected)
+        XCTAssertFalse(model.isReconnecting)
+        await model.disconnect()
+    }
+
+    func testCleanupAndSchedulerRemovalRespectReadOnlyAndReadBack() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        model.connectionReadOnly = true
+        await model.connect()
+        let queue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        model.selectedQueue = queue
+        let scheduler = SchedulerSummary(id: "bull:email:repeat:custom", queueName: "email", name: "scheduled", nextRun: .now, raw: ["repeatKey": "custom"])
+        let preview = try await model.schedulerPreview(scheduler)
+        XCTAssertEqual(preview.kind, "scheduler")
+        XCTAssertEqual(engine.previewCalls, ["custom"])
+        await model.cleanJobs(queueName: queue.name, connection: try XCTUnwrap(model.activeConnection), state: .completed, grace: 60000, limit: 10)
+        await model.removeScheduler(scheduler, connection: try XCTUnwrap(model.activeConnection), kind: preview.kind)
+        XCTAssertTrue(engine.cleanCalls.isEmpty)
+        XCTAssertTrue(engine.schedulerRemovalCalls.isEmpty)
+        model.connectionReadOnly = false
+        await model.connect()
+        model.selectedQueue = queue
+        await model.cleanJobs(queueName: queue.name, connection: try XCTUnwrap(model.activeConnection), state: .active, grace: 60000, limit: 10)
+        await model.cleanJobs(queueName: queue.name, connection: try XCTUnwrap(model.activeConnection), state: .failed, grace: 0, limit: 10)
+        await model.cleanJobs(queueName: queue.name, connection: try XCTUnwrap(model.activeConnection), state: .failed, grace: 60000, limit: 1001)
+        XCTAssertTrue(engine.cleanCalls.isEmpty)
+        await model.cleanJobs(queueName: queue.name, connection: try XCTUnwrap(model.activeConnection), state: .failed, grace: 60000, limit: 10)
+        XCTAssertEqual(engine.cleanCalls.count, 1)
+        XCTAssertEqual(engine.overviewCalls, [queue.name])
+        XCTAssertTrue(model.statusMessage.contains("Removed 2"))
+        await model.removeScheduler(scheduler, connection: try XCTUnwrap(model.activeConnection), kind: preview.kind)
+        XCTAssertEqual(engine.schedulerRemovalCalls.first?.key, "custom")
+        XCTAssertEqual(engine.schedulerCalls, [queue.name])
+        await model.disconnect()
+    }
+
+    func testMaintenanceRejectsAConfirmationFromAnOldConnection() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        let original = try XCTUnwrap(model.activeConnection)
+        model.redisURL = "redis://other.local"
+        await model.connect()
+        await model.cleanJobs(queueName: "email", connection: original, state: .completed, grace: 60000, limit: 10)
+        XCTAssertTrue(engine.cleanCalls.isEmpty)
+        XCTAssertTrue(model.lastError?.contains("Connection changed") == true)
+        let scheduler = SchedulerSummary(id: "schedule", queueName: "email", name: "scheduled", nextRun: .now, raw: ["repeatKey": "custom"])
+        await model.removeScheduler(scheduler, connection: original, kind: "scheduler")
+        XCTAssertTrue(engine.schedulerRemovalCalls.isEmpty)
+        await model.disconnect()
+    }
+
+    func testReconnectStopsOnAuthenticationFailure() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine, reconnectDelays: [0])
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        engine.connectError = BullMQDashboardError.redis("WRONGPASS invalid password")
+        engine.overviewError = BullMQDashboardError.connectionLost("Socket closed")
+        await model.refreshSelectedQueue()
+        for _ in 0..<100 where model.isReconnecting { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(model.isReconnecting)
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(engine.connectCalls.count, 2)
+        XCTAssertTrue(model.lastRefreshError?.contains("authentication failed") == true)
+        await model.disconnect()
+    }
+
+    func testReconnectBackoffAndWindowClosureCancelFurtherAttempts() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine, reconnectDelays: [0, 1])
+        await model.connect()
+        model.selectedQueue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        engine.connectShouldFail = true
+        engine.overviewError = BullMQDashboardError.connectionLost("Socket closed")
+        await model.refreshSelectedQueue()
+        for _ in 0..<100 where model.reconnectAttempt < 2 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(model.reconnectAttempt, 2)
+        XCTAssertEqual(model.reconnectSecondsRemaining, 1)
+        XCTAssertEqual(engine.connectCalls.count, 2)
+        model.closeWindow()
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(engine.connectCalls.count, 2)
+        XCTAssertFalse(model.isReconnecting)
+        XCTAssertNil(model.activeConnection)
+    }
+
+    func testClosingWindowDuringConnectCannotRestoreTheSession() async throws {
+        let engine = FakeBullMQEngine()
+        engine.connectDelay = .milliseconds(100)
+        let model = makeModel(engine: engine)
+        let connecting = Task { await model.connect() }
+        for _ in 0..<100 where engine.connectCalls.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        model.closeWindow()
+        await connecting.value
+        XCTAssertFalse(model.isConnected)
+        XCTAssertNil(model.activeConnection)
+        XCTAssertFalse(model.isReconnecting)
+    }
+
+    func testSchedulerPreviewPassesTimezoneOverrideAndRejectsInvalidZones() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        let scheduler = SchedulerSummary(id: "schedule", queueName: "email", name: "scheduled", nextRun: .now, raw: ["repeatKey": "custom"])
+        _ = try await model.schedulerPreview(scheduler)
+        _ = try await model.schedulerPreview(scheduler, timeZone: "America/New_York")
+        XCTAssertEqual(engine.previewTimeZones.count, 2)
+        XCTAssertNil(engine.previewTimeZones[0])
+        XCTAssertEqual(engine.previewTimeZones[1], "America/New_York")
+        do {
+            _ = try await model.schedulerPreview(scheduler, timeZone: "Invalid/Zone")
+            XCTFail("Invalid timezone should fail before launching the bridge")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("timezone")) }
+        XCTAssertEqual(engine.previewCalls.count, 2)
+        await model.disconnect()
+    }
+
+    func testNewMaintenanceSheetsAndReconnectBannerRender() async throws {
+        let engine = FakeBullMQEngine()
+        let model = makeModel(engine: engine)
+        await model.connect()
+        let queue = QueueSummary(name: "email", prefix: "bull", counts: .empty, health: .healthy)
+        model.selectedQueue = queue
+        let scheduler = SchedulerSummary(id: "schedule", queueName: "email", name: "Email delivery", nextRun: .now, raw: ["repeatKey": "custom"])
+        for dark in [false, true] {
+            try await renderLayout(AnyView(QueueCleanupSheet(queue: queue, connection: try XCTUnwrap(model.activeConnection)).environmentObject(model)), width: 560, height: 440, name: "cleanup-\(dark)", dark: dark)
+            try await renderLayout(AnyView(SchedulerInspectionSheet(scheduler: scheduler, connection: try XCTUnwrap(model.activeConnection)).environmentObject(model)), width: 620, height: 520, name: "scheduler-\(dark)", dark: dark)
+        }
+        engine.overviewError = BullMQDashboardError.connectionLost("Socket closed")
+        await model.refreshSelectedQueue()
+        model.cancelReconnect()
+        try await renderLayout(AnyView(DashboardRootView().environmentObject(model)), width: 1120, height: 850, name: "reconnect-banner")
+        await model.disconnect()
+    }
+
 }
 
 private func makeJob(id: String, queueName: String, state: BullMQState) -> JobSummary {
@@ -1210,11 +1423,17 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     func setQueuePaused(queueName: String, prefix: String, paused: Bool) async throws { pauseCalls.append(paused) }
     var failedJobsByQueue: [String: [JobSummary]] = [:]
     var failedPageDelay: UInt64 = 0
+    var connectCalls: [RedisConnectionConfig] = []
+    var connectDelay: Duration = .zero
+    var connectError: Error?
     var connectShouldFail = false
     var connectedConfig: RedisConnectionConfig?
     var overviewPrefixes: [String] = []
 
     func connect(_ config: RedisConnectionConfig) async throws {
+        connectCalls.append(config)
+        if connectDelay > .zero { try await Task.sleep(for: connectDelay) }
+        if let connectError { throw connectError }
         if connectShouldFail { throw BullMQDashboardError.redis("Connection refused") }
         connectedConfig = config
     }
@@ -1283,6 +1502,22 @@ private final class FakeBullMQEngine: BullMQEngine, @unchecked Sendable {
     func addJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String {
         addCalls.append((name: name, data: data, options: options))
         return addedJobID
+    }
+
+    var cleanCalls: [(state: BullMQState, grace: Int, limit: Int)] = []
+    var schedulerRemovalCalls: [(key: String, kind: String)] = []
+    var previewCalls: [String] = []
+    var previewTimeZones: [String?] = []
+    func cleanJobs(queueName: String, prefix: String, state: BullMQState, grace: Int, limit: Int) async throws -> Int {
+        cleanCalls.append((state, grace, limit)); return 2
+    }
+    func getSchedulerPreview(queueName: String, prefix: String, key: String, timeZone: String? = nil) async throws -> SchedulerPreview {
+        previewCalls.append(key)
+        previewTimeZones.append(timeZone)
+        return SchedulerPreview(fields: ["every": "1000"], kind: "scheduler", times: [1000], message: "test")
+    }
+    func removeScheduler(queueName: String, prefix: String, key: String, kind: String) async throws {
+        schedulerRemovalCalls.append((key, kind))
     }
 
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot] {

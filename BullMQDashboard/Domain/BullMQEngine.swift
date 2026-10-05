@@ -18,6 +18,9 @@ protocol BullMQEngine: Sendable {
     func promoteJob(queueName: String, prefix: String, jobID: String) async throws
     func duplicateJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String
     func addJob(queueName: String, prefix: String, name: String, data: AnySendableJSON, options: AnySendableJSON) async throws -> String
+    func cleanJobs(queueName: String, prefix: String, state: BullMQState, grace: Int, limit: Int) async throws -> Int
+    func getSchedulerPreview(queueName: String, prefix: String, key: String, timeZone: String?) async throws -> SchedulerPreview
+    func removeScheduler(queueName: String, prefix: String, key: String, kind: String) async throws
     func getMetrics(queueName: String, prefix: String) async throws -> [QueueMetricSnapshot]
     func getWorkers(queueName: String, prefix: String) async throws -> [WorkerSummary]
     func getSchedulers(queueName: String, prefix: String) async throws -> [SchedulerSummary]

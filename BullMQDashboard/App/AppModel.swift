@@ -19,6 +19,8 @@ enum JobActionKind: String, Sendable {
     case add
     case pause
     case resume
+    case clean
+    case removeScheduler
 }
 
 struct JobDuplicateDraft: Equatable, Sendable {
@@ -79,6 +81,12 @@ final class AppModel: ObservableObject {
     @Published var refreshInterval = 15
     @Published var lastRefreshedAt: Date?
     @Published var lastRefreshError: String?
+    @Published private(set) var reconnectSecondsRemaining: Int?
+    @Published private(set) var reconnectAttempt = 0
+    var isReconnecting: Bool { reconnectTask != nil }
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectRevision = 0
+    private let reconnectDelays: [Int]
     @Published var jobFilter = JobFilter()
     @Published private(set) var appliedJobFilter: JobFilter?
     @Published private(set) var searchCursor: JobSearchCursor?
@@ -158,14 +166,7 @@ final class AppModel: ObservableObject {
         } catch {
             guard generation == connectionGeneration, revision == failureScanRevision else { return }
             if !(error is CancellationError) { failureScanError = error.localizedDescription }
-            if let failure = error as? BullMQDashboardError {
-                switch failure {
-                case .connectionLost, .notConnected:
-                    isConnected = false
-                    lastRefreshError = error.localizedDescription
-                default: break
-                }
-            }
+            recoverConnection(after: error)
         }
     }
 
@@ -337,8 +338,10 @@ final class AppModel: ObservableObject {
         snapshotStore: MetricSnapshotStore = MetricSnapshotStore(),
         queueNameStore: QueueNameStore = QueueNameStore(),
         queueMetadataStore: QueueMetadataStore = QueueMetadataStore(),
-        workspacePreferenceStore: QueueWorkspacePreferenceStore = QueueWorkspacePreferenceStore()
+        workspacePreferenceStore: QueueWorkspacePreferenceStore = QueueWorkspacePreferenceStore(),
+        reconnectDelays: [Int] = [1, 2, 5, 10, 30, 60]
     ) {
+        self.reconnectDelays = reconnectDelays.isEmpty ? [1] : reconnectDelays
         self.engine = engine
         self.liveEngine = engine
         self.profileStore = profileStore
@@ -453,6 +456,7 @@ final class AppModel: ObservableObject {
 
     func connect() async {
         guard !activeLoadingPhases.contains(.connecting), activeJobAction == nil else { return }
+        cancelReconnect()
         let requestedURL = redisURL
         let requestedPrefix = prefix
         let requestedName = connectionProfileName
@@ -462,7 +466,9 @@ final class AppModel: ObservableObject {
             isConnected = false
             activeConnection = nil
             resetQueueStateForNewConnection()
+            let generation = connectionGeneration
             await engine.disconnect()
+            guard generation == connectionGeneration else { throw CancellationError() }
             engine = liveEngine
             isDemo = false
             var parsed = try RedisURLParser.parse(requestedURL, defaultName: requestedName, prefix: requestedPrefix)
@@ -470,7 +476,12 @@ final class AppModel: ObservableObject {
             parsed.isReadOnly = requestedReadOnly
             statusMessage = "Connecting to \(parsed.host):\(parsed.port)…"
             do { try await engine.connect(parsed) }
-            catch { throw BullMQDashboardError.redis(Self.connectionAdvice(error)) }
+            catch {
+                guard generation == connectionGeneration, !(error is CancellationError) else { throw CancellationError() }
+                throw BullMQDashboardError.redis(Self.connectionAdvice(error))
+            }
+            try Task.checkCancellation()
+            guard generation == connectionGeneration else { throw CancellationError() }
             activeConnection = parsed
             do { snapshots = try snapshotStore.load(scope: queueScope(for: parsed)) }
             catch { lastError = "Could not load metric history: \(error.localizedDescription)" }
@@ -490,6 +501,7 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() async {
+        cancelReconnect()
         guard !activeLoadingPhases.contains(.connecting), activeJobAction == nil else { return }
         await runLoading(.connecting) {
             isConnected = false
@@ -499,6 +511,136 @@ final class AppModel: ObservableObject {
             engine = liveEngine
             isDemo = false
             statusMessage = "Not connected"
+        }
+    }
+
+    func cancelReconnect() {
+        reconnectRevision += 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectSecondsRemaining = nil
+        reconnectAttempt = 0
+    }
+
+    func retryConnectionNow() {
+        guard !isConnected, activeConnection != nil, !isDemo else { return }
+        cancelReconnect()
+        startReconnect(immediately: true)
+    }
+
+    func closeWindow() {
+        cancelReconnect()
+        resetQueueStateForNewConnection()
+        isConnected = false
+        activeConnection = nil
+        let closingEngine = engine
+        Task { await closingEngine.disconnect() }
+    }
+
+    private func recoverConnection(after error: Error) {
+        guard let failure = error as? BullMQDashboardError else { return }
+        switch failure {
+        case .connectionLost, .notConnected: break
+        default: return
+        }
+        isConnected = false
+        lastRefreshError = error.localizedDescription
+        guard activeConnection != nil, !isDemo, reconnectTask == nil else { return }
+        // Invalidate in-flight reads while retaining their last successful data.
+        connectionGeneration += 1
+        refreshRequestID += 1
+        refreshTask?.cancel()
+        selectedJobDetailTask?.cancel()
+        selectedJobLogTask?.cancel()
+        startReconnect()
+    }
+
+    private func startReconnect(immediately: Bool = false) {
+        guard let config = activeConnection, !isDemo else { return }
+        let revision = reconnectRevision
+        let generation = connectionGeneration
+        reconnectTask = Task { [weak self] in
+            guard let self else { return }
+            var attempt = 0
+            while !Task.isCancelled, revision == reconnectRevision, generation == connectionGeneration {
+                let delay = immediately && attempt == 0 ? 0 : reconnectDelays[min(attempt, reconnectDelays.count - 1)]
+                reconnectAttempt = attempt + 1
+                for remaining in stride(from: delay, to: 0, by: -1) {
+                    reconnectSecondsRemaining = remaining
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    guard revision == reconnectRevision, generation == connectionGeneration else { return }
+                }
+                reconnectSecondsRemaining = 0
+                // A cancelled mutation may have executed. Never retry it; wait
+                // for any running action to finish before reconnecting reads.
+                while activeJobAction != nil || isLoading {
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                    guard revision == reconnectRevision, generation == connectionGeneration else { return }
+                }
+                do {
+                    try Task.checkCancellation()
+                    try await engine.connect(config)
+                    try Task.checkCancellation()
+                    guard revision == reconnectRevision, generation == connectionGeneration else { return }
+                    isConnected = true
+                    lastError = nil
+                    // Keep data stale until the read-back succeeds.
+                    reconnectTask = nil
+                    reconnectSecondsRemaining = nil
+                    reconnectAttempt = 0
+                    statusMessage = "Reconnected to \(config.name)"
+                    if selectedQueue != nil { await refreshSelectedQueue() }
+                    else { await discoverMoreQueues() }
+                    return
+                } catch is CancellationError { return }
+                catch {
+                    guard revision == reconnectRevision, generation == connectionGeneration else { return }
+                    lastRefreshError = Self.connectionAdvice(error)
+                    let text = error.localizedDescription.lowercased()
+                    if ["wrongpass", "noauth", "noperm", "certificate"].contains(where: text.contains) {
+                        reconnectTask = nil
+                        reconnectSecondsRemaining = nil
+                        statusMessage = "Reconnect stopped: \(Self.connectionAdvice(error))"
+                        return
+                    }
+                    attempt += 1
+                    await Task.yield()
+                }
+            }
+        }
+    }
+
+    func schedulerPreview(_ scheduler: SchedulerSummary, timeZone: String? = nil) async throws -> SchedulerPreview {
+        guard isConnected, let key = scheduler.raw["repeatKey"] else { throw BullMQDashboardError.notConnected }
+        let generation = connectionGeneration
+        if let timeZone, TimeZone(identifier: timeZone) == nil { throw BullMQDashboardError.redis("Choose a valid timezone for the preview.") }
+        let preview = try await engine.getSchedulerPreview(queueName: scheduler.queueName, prefix: activePrefix, key: key, timeZone: timeZone)
+        guard generation == connectionGeneration else { throw CancellationError() }
+        return preview
+    }
+
+    func cleanJobs(queueName: String, connection: RedisConnectionConfig, state: BullMQState, grace: Int, limit: Int) async {
+        guard activeConnection == connection else { lastError = "Connection changed. Review cleanup again."; return }
+        guard isConnected, canWrite, activeJobAction == nil else { lastError = "Cleanup requires an idle, connected, writable profile."; return }
+        guard [.completed, .failed].contains(state), grace >= 60_000, (1...1000).contains(limit) else { lastError = "Choose completed or failed jobs, an age of at least one minute, and a limit of 1–1,000."; return }
+        await performJobAction(.clean, queueName: queueName) {
+            let count = try await engine.cleanJobs(queueName: queueName, prefix: activePrefix, state: state, grace: grace, limit: limit)
+            resetSelectedJob()
+            resetFailureScan()
+            return "Removed \(count) retained \(state.rawValue) jobs from \(queueName)"
+        }
+    }
+
+    func removeScheduler(_ scheduler: SchedulerSummary, connection: RedisConnectionConfig, kind: String) async {
+        guard activeConnection == connection else { lastError = "Connection changed. Inspect this schedule again."; return }
+        guard isConnected, canWrite, activeJobAction == nil else { lastError = "Schedule removal requires an idle, connected, writable profile."; return }
+        guard let key = scheduler.raw["repeatKey"], ["scheduler", "legacy"].contains(kind) else { lastError = "Inspect this schedule again before removing it."; return }
+        await performJobAction(.removeScheduler, queueName: scheduler.queueName) {
+            try await engine.removeScheduler(queueName: scheduler.queueName, prefix: activePrefix, key: key, kind: kind)
+            let loaded = try await engine.getSchedulers(queueName: scheduler.queueName, prefix: activePrefix)
+            schedulersByQueue[cacheKey(scheduler.queueName)] = loaded
+            if selectedQueue?.name == scheduler.queueName { schedulers = loaded }
+            return "Removed schedule \(scheduler.name)"
         }
     }
 
@@ -1152,6 +1294,7 @@ final class AppModel: ObservableObject {
 
     private func loadLatestSelectedJobLogs(showLoading: Bool) async {
         guard let selectedJob else { return }
+        let generation = connectionGeneration
         let jobID = selectedJob.id
         let inspection = inspectionRequestID
         if showLoading {
@@ -1180,6 +1323,8 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            guard generation == connectionGeneration, inspection == inspectionRequestID else { return }
+            recoverConnection(after: error)
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
         }
@@ -1187,6 +1332,7 @@ final class AppModel: ObservableObject {
 
     private func loadOlderSelectedJobLogs(before firstLogID: Int) async {
         guard let selectedJob else { return }
+        let generation = connectionGeneration
         let jobID = selectedJob.id
         let inspection = inspectionRequestID
         let start = max(0, firstLogID - jobLogPageSize - 1)
@@ -1210,6 +1356,8 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            guard generation == connectionGeneration, inspection == inspectionRequestID else { return }
+            recoverConnection(after: error)
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
         }
@@ -1242,6 +1390,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            recoverConnection(after: error)
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
         }
@@ -1268,6 +1417,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            recoverConnection(after: error)
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
         }
@@ -1347,6 +1497,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            recoverConnection(after: error)
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
         }
@@ -1387,6 +1538,8 @@ final class AppModel: ObservableObject {
         case .add: "added"
         case .pause: "paused"
         case .resume: "resumed"
+        case .clean: "cleaned"
+        case .removeScheduler: "removed scheduler"
         }
     }
 
@@ -1755,14 +1908,7 @@ final class AppModel: ObservableObject {
             return
         } catch {
             guard phase == .connecting || generation == connectionGeneration else { return }
-            if let failure = error as? BullMQDashboardError {
-                switch failure {
-                case .connectionLost, .notConnected:
-                    isConnected = false
-                    lastRefreshError = error.localizedDescription
-                default: break
-                }
-            }
+            recoverConnection(after: error)
             lastError = error.localizedDescription
             statusMessage = error.localizedDescription
         }
