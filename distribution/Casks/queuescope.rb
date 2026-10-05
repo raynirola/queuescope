@@ -1,6 +1,6 @@
 cask "queuescope" do
-  version "0.5.1"
-  sha256 "18077e60e164ab4ad9c68f0b5487a28959b6c72b0bf43ec5ca2879b3f82ef620"
+  version "0.6.0"
+  sha256 "6fa6b8929ad89b23f99a708e9aa1564eba8d14b57cea51c2f90ad25ca7cd7d51"
 
   url "https://github.com/raynirola/queuescope/releases/download/v#{version}/QueueScope-#{version}-macOS.zip"
   name "QueueScope"
